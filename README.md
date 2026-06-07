@@ -116,7 +116,7 @@ All commands are available via the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+
 |---------|---------|-------------|
 | `ailinter.path` | `"ailinter"` | Path to the AILINTER binary (`/usr/local/bin/ailinter`, etc.) |
 | `ailinter.enable` | `true` | Enable scanning on file save |
-| `ailinter.scanOnOpen` | `false` | Automatically scan files when opened |
+| `ailinter.scanOnOpen` | `true` | Automatically scan files when opened |
 | `ailinter.qualityThreshold` | `80` | Minimum score (0–100). Files below this show warnings. |
 | `ailinter.showGutterIcons` | `true` | Show severity icons in the gutter |
 | `ailinter.showCodeLens` | `true` | Show function-level score annotations |

@@ -77,26 +77,58 @@ export function applyDecorations(
   editor: vscode.TextEditor,
   findings: AilinterFinding[]
 ): void {
-  const criticals: vscode.DecorationOptions[] = [];
-  const errors: vscode.DecorationOptions[] = [];
-  const warnings: vscode.DecorationOptions[] = [];
-  const secrets: vscode.DecorationOptions[] = [];
-  const vulns: vscode.DecorationOptions[] = [];
+  if (!editor || findings.length === 0) return;
 
   const normalizedDoc = path.normalize(editor.document.fileName);
-  let matched = 0;
-  let filtered = 0;
+  const buckets = categorizeFindings(findings, editor.document.fileName, normalizedDoc);
+
+  console.log(
+    `[ailinter:decorations] Result: ${buckets.matched} matched, ${buckets.filtered} filtered out ` +
+    `for "${editor.document.fileName}"`
+  );
+
+  editor.setDecorations(criticalDecoration, buckets.criticals);
+  editor.setDecorations(errorDecoration, buckets.errors);
+  editor.setDecorations(warningDecoration, buckets.warnings);
+  editor.setDecorations(secretDecoration, buckets.secrets);
+  editor.setDecorations(vulnerabilityDecoration, buckets.vulns);
+}
+
+// ── Finding categorization helper ─────────────────────────────────────────────
+
+interface DecorationBuckets {
+  criticals: vscode.DecorationOptions[];
+  errors: vscode.DecorationOptions[];
+  warnings: vscode.DecorationOptions[];
+  secrets: vscode.DecorationOptions[];
+  vulns: vscode.DecorationOptions[];
+  matched: number;
+  filtered: number;
+}
+
+/**
+ * Categorize findings into decoration buckets by severity/type.
+ * Each finding is also filtered against the currently open document path.
+ */
+function categorizeFindings(
+  findings: AilinterFinding[],
+  documentPath: string,
+  normalizedDoc: string
+): DecorationBuckets {
+  const buckets: DecorationBuckets = {
+    criticals: [], errors: [], warnings: [], secrets: [], vulns: [],
+    matched: 0, filtered: 0,
+  };
   let debugLogged = 0;
 
   for (const f of findings) {
-    // Only apply to the currently open file (normalize paths to handle relative vs absolute)
     const findingPath = path.isAbsolute(f.file)
       ? f.file
-      : path.resolve(path.dirname(editor.document.fileName), f.file);
+      : path.resolve(path.dirname(documentPath), f.file);
     const normalizedFinding = path.normalize(findingPath);
 
     if (normalizedFinding !== normalizedDoc) {
-      filtered++;
+      buckets.filtered++;
       if (debugLogged < 3) {
         console.log(
           `[ailinter:decorations] FILTERED: finding.file="${f.file}" → ` +
@@ -106,49 +138,60 @@ export function applyDecorations(
       }
       continue;
     }
-    matched++;
+    buckets.matched++;
 
-    const range = new vscode.Range(f.line - 1, 0, f.line - 1, 0);
-
-    const md = new vscode.MarkdownString();
-    const severityBadge = getSeverityBadge(f.severity);
-    md.appendMarkdown(
-      `**${severityBadge} [ailinter] ${f.smellType || f.category}**\n\n${f.message}`
-    );
-    if (f.smellType) {
-      md.appendMarkdown(
-        `\n\n[Get Refactoring Strategy](command:ailinter.getStrategy?${encodeURIComponent(
-          JSON.stringify({ smell: f.smellType, file: f.file, line: f.line })
-        )})`
-      );
-    }
-    md.isTrusted = true;
-
-    const opts: vscode.DecorationOptions = { range, hoverMessage: md };
-
-    if (f.category === 'secret') {
-      secrets.push(opts);
-    } else if (f.category === 'vulnerability') {
-      vulns.push(opts);
-    } else if (f.severity === 'critical') {
-      criticals.push(opts);
-    } else if (f.severity === 'error') {
-      errors.push(opts);
-    } else {
-      warnings.push(opts);
-    }
+    const opts = buildDecorationOption(f);
+    assignToBucket(f, opts, buckets);
   }
 
-  console.log(
-    `[ailinter:decorations] Result: ${matched} matched, ${filtered} filtered out ` +
-    `for "${editor.document.fileName}"`
-  );
+  return buckets;
+}
 
-  editor.setDecorations(criticalDecoration, criticals);
-  editor.setDecorations(errorDecoration, errors);
-  editor.setDecorations(warningDecoration, warnings);
-  editor.setDecorations(secretDecoration, secrets);
-  editor.setDecorations(vulnerabilityDecoration, vulns);
+/**
+ * Build a DecorationOptions object for a single finding, including the hover message.
+ */
+function buildDecorationOption(f: AilinterFinding): vscode.DecorationOptions {
+  const range = new vscode.Range(Math.max(0, f.line - 1), 0, Math.max(0, f.line - 1), 0);
+  return { range, hoverMessage: buildHoverMessage(f) };
+}
+
+/**
+ * Build a hover MarkdownString for a finding.
+ */
+function buildHoverMessage(f: AilinterFinding): vscode.MarkdownString {
+  const md = new vscode.MarkdownString();
+  const severityBadge = getSeverityBadge(f.severity);
+  md.appendMarkdown(`**${severityBadge} [ailinter] ${f.smellType || f.category}**\n\n${f.message}`);
+  if (f.smellType) {
+    md.appendMarkdown(
+      `\n\n[Get Refactoring Strategy](command:ailinter.getStrategy?${encodeURIComponent(
+        JSON.stringify({ smell: f.smellType, file: f.file, line: f.line })
+      )})`
+    );
+  }
+  md.isTrusted = true;
+  return md;
+}
+
+/**
+ * Assign a decoration option to the correct severity/type bucket.
+ */
+function assignToBucket(
+  f: AilinterFinding,
+  opts: vscode.DecorationOptions,
+  buckets: DecorationBuckets
+): void {
+  if (f.category === 'secret') {
+    buckets.secrets.push(opts);
+  } else if (f.category === 'vulnerability') {
+    buckets.vulns.push(opts);
+  } else if (f.severity === 'critical') {
+    buckets.criticals.push(opts);
+  } else if (f.severity === 'error') {
+    buckets.errors.push(opts);
+  } else {
+    buckets.warnings.push(opts);
+  }
 }
 
 /** Clear all decorations from the editor */

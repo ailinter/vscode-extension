@@ -17,6 +17,14 @@ interface ScoreEntry {
   label: string;
 }
 
+/** Return type for getRegressions / getImprovements */
+interface ScoredEntry {
+  filePath: string;
+  before: number;
+  after: number;
+  delta: number;
+}
+
 export class CodeHealthMonitor {
   private history = new Map<string, ScoreEntry>();
 
@@ -99,39 +107,28 @@ export class CodeHealthMonitor {
   /**
    * Get all files that have regressed (score decreased).
    */
-  getRegressions(): { filePath: string; before: number; after: number; delta: number }[] {
-    const regressions: {
-      filePath: string;
-      before: number;
-      after: number;
-      delta: number;
-    }[] = [];
-    for (const [filePath, entry] of this.history) {
-      if (entry.before !== undefined && entry.after < entry.before) {
-        regressions.push({
-          filePath,
-          before: entry.before,
-          after: entry.after,
-          delta: entry.after - entry.before,
-        });
-      }
-    }
-    return regressions;
+  getRegressions(): ScoredEntry[] {
+    return this.getFilteredEntries((before, after) => after < before);
   }
 
   /**
    * Get all files that have improved (score increased).
    */
-  getImprovements(): { filePath: string; before: number; after: number; delta: number }[] {
-    const improvements: {
-      filePath: string;
-      before: number;
-      after: number;
-      delta: number;
-    }[] = [];
+  getImprovements(): ScoredEntry[] {
+    return this.getFilteredEntries((before, after) => after > before);
+  }
+
+  /**
+   * Filter history entries by a comparison predicate.
+   * Shared implementation for getRegressions and getImprovements.
+   */
+  private getFilteredEntries(
+    predicate: (before: number, after: number) => boolean
+  ): ScoredEntry[] {
+    const results: ScoredEntry[] = [];
     for (const [filePath, entry] of this.history) {
-      if (entry.before !== undefined && entry.after > entry.before) {
-        improvements.push({
+      if (entry.before !== undefined && predicate(entry.before, entry.after)) {
+        results.push({
           filePath,
           before: entry.before,
           after: entry.after,
@@ -139,7 +136,7 @@ export class CodeHealthMonitor {
         });
       }
     }
-    return improvements;
+    return results;
   }
 
   /** Clear all history */

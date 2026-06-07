@@ -16,7 +16,9 @@ import {
 const fileCache = new Map<string, FileScore>();
 
 export function getCachedResult(filePath: string): FileScore | undefined {
-  return fileCache.get(filePath);
+  // Must normalize the same way updateCache does, otherwise cache key mismatch
+  const normalised = path.resolve(path.normalize(filePath));
+  return fileCache.get(normalised);
 }
 
 export function getAllCachedResults(): FileScore[] {
@@ -134,6 +136,25 @@ export function runAilinter(
   });
 }
 
+/**
+ * Filter out false-positive go vet findings that occur in single-file mode.
+ * When `ailinter check <file>` runs go vet on a single file, it can't resolve
+ * cross-file package imports, producing spurious "package error", "undefined:",
+ * and "could not import" messages. These are not real defects.
+ */
+export function shouldExcludeFinding(finding: AilinterFinding): boolean {
+  // Exclude go vet package-level errors — false positives in single-file mode
+  if (finding.category === 'metalinter') {
+    if (finding.message.includes('package error:')) return true;
+    if (finding.message.includes('could not import')) return true;
+    if (finding.message.includes('too many errors')) return true;
+    if (finding.message.includes('invalid package name')) return true;
+    // "undefined:" from go vet in single-file mode: can't resolve cross-file refs
+    if (finding.message.includes('undefined:')) return true;
+  }
+  return false;
+}
+
 // ── Parse output ─────────────────────────────────────────────────────────────
 
 // Format A: "Quality Score: 99/100" (legacy CLI format)
@@ -150,9 +171,21 @@ const FINDING_NO_COL = /^(.+?):(\d+):\s*(error|warning|info|critical):\s*(.+?)(?
 // Format 3: file:line:column-endcol: severity: message (category)
 const FINDING_RANGE = /^(.+?):(\d+):(\d+)-(\d+):\s*(error|warning|info|critical):\s*(.+?)(?:\s*\((\w+)\))?$/m;
 
-// Format 4: metalinter format — file:line:col: [tool] message (code)
+// Format 4a: govet verbose format — file:line:col:\d+:\d+: [tool] message (code)
+// This handles the extra ":1:1:" suffix govet sometimes emits after the column:
+//   /path/file.go:20:17:1:1: [govet] package error: undefined: Foo ()
+// Groups: 1=file, 2=line, 3=col, 4=tool, 5=message, 6=code
+const FINDING_GOVET_VERBOSE = /^(.+?):(\d+):(\d+):\d+:\d+:\s*\[(\w+)\]\s*(.+?)(?:\s*\((\w+)\))?$/m;
+
+// Format 4b: metalinter format — file:line:col: [tool] message (code)
 // Uses a fixed severity of 'warning' since these tools don't report severity
 const FINDING_METALINTER = /^(.+?):(\d+):(\d+):\s*\[(\w+)\]\s*(.+?)(?:\s*\((\w+)\))?$/m;
+
+// Format 5: govet/compiler error format — file:line:col: message (no severity keyword)
+//   internal/analyzer/report.go:20:17: undefined: QualityResult
+// Groups: 1=file, 2=line, 3=col, 4=message
+// These get assigned severity 'error' since they're compiler/runtime errors.
+const FINDING_COMPILER = /^(.+?):(\d+):(\d+):\s*(.+)$/m;
 
 export function parseOutput(output: string): ScanResult {
   const findings: AilinterFinding[] = [];
@@ -173,30 +206,58 @@ export function parseOutput(output: string): ScanResult {
     }
 
     // Try range format first (most specific)
+    // Groups: 1=file, 2=line, 3=startCol, 4=endCol, 5=severity, 6=message, 7=category
     let m = trimmed.match(FINDING_RANGE);
     if (m) {
-      findings.push(buildFinding(m, 1, 2, 3, 5, 4, 6));
+      const finding = buildFinding(m, 1, 2, 3, 5, 4, 6, 7);
+      if (!shouldExcludeFinding(finding)) findings.push(finding);
       continue;
     }
 
     // Try full format (with column)
+    // Groups: 1=file, 2=line, 3=col, 4=severity, 5=message, 6=category
     m = trimmed.match(FINDING_FULL);
     if (m) {
-      findings.push(buildFinding(m, 1, 2, 3, 4, undefined, 5));
+      const finding = buildFinding(m, 1, 2, 3, 4, undefined, 5, 6);
+      if (!shouldExcludeFinding(finding)) findings.push(finding);
+      continue;
+    }
+
+    // Try govet verbose format (path:line:col:\d+:\d+: [tool] ...)
+    // Must come before FINDING_METALINTER since it's more specific (extra :\d+:\d+: group)
+    m = trimmed.match(FINDING_GOVET_VERBOSE);
+    if (m) {
+      const finding = buildMetalinterFinding(m);
+      if (!shouldExcludeFinding(finding)) findings.push(finding);
       continue;
     }
 
     // Try metalinter format (e.g. [staticcheck], [govet])
+    // Groups: 1=file, 2=line, 3=col, 4=tool, 5=message, 6=code
     m = trimmed.match(FINDING_METALINTER);
     if (m) {
-      findings.push(buildMetalinterFinding(m));
+      const finding = buildMetalinterFinding(m);
+      if (!shouldExcludeFinding(finding)) findings.push(finding);
       continue;
     }
 
     // Try no-column format
+    // Groups: 1=file, 2=line, 3=severity, 4=message, 5=category
     m = trimmed.match(FINDING_NO_COL);
     if (m) {
-      findings.push(buildFinding(m, 1, 2, undefined, 3, undefined, 4));
+      const finding = buildFinding(m, 1, 2, undefined, 3, undefined, 4, 5);
+      if (!shouldExcludeFinding(finding)) findings.push(finding);
+      continue;
+    }
+
+    // Try compiler/govet error format (file:line:col: message, no severity keyword)
+    // These are compilation errors that don't have a severity marker.
+    // Groups: 1=file, 2=line, 3=col, 4=message
+    // Skip lines with empty file paths (govet header like ":1:1: [govet]...")
+    m = trimmed.match(FINDING_COMPILER);
+    if (m && m[1].trim().length > 0) {
+      const finding = buildCompilerFinding(m);
+      if (!shouldExcludeFinding(finding)) findings.push(finding);
       continue;
     }
 
@@ -268,33 +329,99 @@ function buildFinding(
 }
 
 /**
- * Build a finding from the metalinter regex format:
- *   file:line:col: [tool] message (code)
- *
- * These findings always get severity 'warning' and category 'metalinter'
- * since the output doesn't carry an explicit severity keyword.
+ * Build an AilinterFinding from base components.
+ * Shared factory used by buildMetalinterFinding and buildCompilerFinding.
  */
-function buildMetalinterFinding(m: RegExpMatchArray): AilinterFinding {
-  const message = m[5].trim();
+function buildFindingSimple(
+  file: string,
+  line: number,
+  column: number,
+  message: string,
+  severity: AilinterFinding['severity'],
+  category: AilinterFinding['category'] = 'metalinter'
+): AilinterFinding {
   return {
-    file: m[1],
-    line: parseInt(m[2], 10),
-    column: parseInt(m[3], 10),
-    severity: 'warning',
-    message,
-    category: 'metalinter',
+    file,
+    line,
+    column,
+    severity,
+    message: message.trim(),
+    category,
     smellType: detectSmellType(message),
     score: undefined,
   };
 }
 
+/**
+ * Build a finding from the metalinter regex format:
+ *   file:line:col: [tool] message (code)
+ * Groups: 1=file, 2=line, 3=col, 4=tool, 5=message, 6=code
+ */
+function buildMetalinterFinding(m: RegExpMatchArray): AilinterFinding {
+  return buildFindingSimple(m[1], parseInt(m[2], 10), parseInt(m[3], 10), m[5], 'warning');
+}
+
+/**
+ * Build a finding from the compiler/govet error format:
+ *   file:line:col: message (no severity keyword)
+ * These get severity 'error' since they're compilation/runtime failures.
+ * Groups: 1=file, 2=line, 3=col, 4=message
+ */
+function buildCompilerFinding(m: RegExpMatchArray): AilinterFinding {
+  return buildFindingSimple(m[1], parseInt(m[2], 10), parseInt(m[3], 10), m[4], 'error');
+}
+
 // ── Cache updating helpers ───────────────────────────────────────────────────
 
-export function updateCache(filePath: string, result: ScanResult): FileScore {
+/**
+ * Check whether a finding's file path matches a target file path.
+ * Normalizes both paths for comparison.
+ * Returns true if they refer to the same file.
+ *
+ * For relative finding paths (e.g., "internal/analyzer/report.go"), tries:
+ * 1. workspaceRoot (where CLI was invoked from) — most correct for govet output
+ * 2. targetPath's directory — fallback for other relative paths
+ */
+function findingMatchesFile(
+  finding: AilinterFinding,
+  targetPath: string,
+  workspaceRoot?: string
+): boolean {
+  const normalizedTarget = path.resolve(path.normalize(targetPath));
+  const targetDir = path.dirname(normalizedTarget);
+
+  if (path.isAbsolute(finding.file)) {
+    return path.normalize(finding.file) === normalizedTarget;
+  }
+
+  // Relative path — try workspace root first (CLI CWD)
+  if (workspaceRoot) {
+    const wsPath = path.resolve(workspaceRoot, finding.file);
+    if (path.normalize(wsPath) === normalizedTarget) {
+      return true;
+    }
+  }
+
+  // Fallback: resolve against document directory
+  const resolved = path.resolve(targetDir, finding.file);
+  return path.normalize(resolved) === normalizedTarget;
+}
+
+export function updateCache(filePath: string, result: ScanResult, workspaceRoot?: string): FileScore {
   // Resolve to absolute path, then normalise (handles both relative and absolute inputs)
   const normalised = path.resolve(path.normalize(filePath));
   const existing = fileCache.get(normalised);
   const previousScore = existing?.score;
+
+  // Strip findings whose file path doesn't match — avoids polluting cache
+  // with mangled govet/staticcheck paths (e.g., "file.go:20:17:1:1: [govet]...")
+  const cleanFindings = result.findings.filter(f => {
+    const matches = findingMatchesFile(f, normalised, workspaceRoot);
+    if (!matches) {
+      console.log(`[ailinter:cache] Stripping finding with mismatched path: "${f.file}"`);
+    }
+    return matches;
+  });
 
   const fileScore: FileScore = {
     path: normalised,
@@ -302,7 +429,7 @@ export function updateCache(filePath: string, result: ScanResult): FileScore {
     previousScore,
     delta: previousScore !== undefined ? result.score - previousScore : undefined,
     lastScanned: new Date(),
-    findings: result.findings,
+    findings: cleanFindings,
   };
 
   fileCache.set(normalised, fileScore);
@@ -314,8 +441,9 @@ export function updateCache(filePath: string, result: ScanResult): FileScore {
  */
 export async function scanAndCache(
   filePath: string,
-  binaryPath: string
+  binaryPath: string,
+  workspaceRoot?: string
 ): Promise<FileScore> {
   const result = await runAilinter(filePath, binaryPath);
-  return updateCache(filePath, result);
+  return updateCache(filePath, result, workspaceRoot);
 }

@@ -39,42 +39,49 @@ export function updateStatusBar(
   if (!statusBarItem) return;
 
   const deltaStr = buildDeltaString(options?.delta);
-  const issueStr =
-    options?.findingCount !== undefined
-      ? ` — ${options.findingCount} issue${options.findingCount !== 1 ? 's' : ''}`
-      : '';
+  const issueStr = buildIssueString(options?.findingCount);
 
   statusBarItem.text = `$(shield) AILINTER: ${score}/100${deltaStr}${issueStr}`;
 
-  // Color coding
-  if (score >= 80) {
-    statusBarItem.backgroundColor = undefined;
-    statusBarItem.color = '#3fb950'; // green
-  } else if (score >= 60) {
-    statusBarItem.color = '#d29922'; // yellow
-  } else {
-    statusBarItem.color = '#f85149'; // red
-  }
+  statusBarItem.backgroundColor = undefined;
+  statusBarItem.color = colorForScore(score);
 
-  // Tooltip
-  const tooltipParts: string[] = [`Code Quality: ${score}/100`];
+  statusBarItem.tooltip = buildTooltip(score, options);
+  statusBarItem.show();
+}
+
+function colorForScore(score: number): string | undefined {
+  if (score >= 80) return '#3fb950';  // green
+  if (score >= 60) return '#d29922';  // yellow
+  return '#f85149';                    // red
+}
+
+function buildIssueString(findingCount?: number): string {
+  if (findingCount === undefined) return '';
+  return ` — ${findingCount} issue${findingCount !== 1 ? 's' : ''}`;
+}
+
+function buildTooltip(score: number, options?: {
+  delta?: number;
+  findingCount?: number;
+  fileName?: string;
+}): string {
+  const parts: string[] = [`Code Quality: ${score}/100`];
   if (options?.delta !== undefined) {
-    tooltipParts.push(
+    parts.push(
       options.delta >= 0
         ? `Improved by ${options.delta} points`
         : `Regressed by ${Math.abs(options.delta)} points`
     );
   }
   if (options?.findingCount !== undefined) {
-    tooltipParts.push(`${options.findingCount} issues found`);
+    parts.push(`${options.findingCount} issues found`);
   }
   if (options?.fileName) {
-    tooltipParts.push(`File: ${vscode.workspace.asRelativePath(options.fileName)}`);
+    parts.push(`File: ${vscode.workspace.asRelativePath(options.fileName)}`);
   }
-  tooltipParts.push('Click for details');
-  statusBarItem.tooltip = tooltipParts.join(' · ');
-
-  statusBarItem.show();
+  parts.push('Click for details');
+  return parts.join(' · ');
 }
 
 /**

@@ -43,95 +43,121 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
     const lenses: vscode.CodeLens[] = [];
 
     // ── 1. File-level score at the very top ────────────────────────────────
-    const topRange = new vscode.Range(0, 0, 0, 0);
-    const scoreIcon = fileResult.score >= 80 ? '$(shield)' : '$(alert)';
-    const scoreColor = fileResult.score >= 80 ? '🟢' : fileResult.score >= 60 ? '🟡' : '🔴';
-    const findingCount = fileResult.findings.length;
-
-    lenses.push(
-      new vscode.CodeLens(topRange, {
-        title: `${scoreColor} AILINTER: ${fileResult.score}/100  —  ${findingCount} issue${findingCount !== 1 ? 's' : ''}`,
-        tooltip: `File quality score: ${fileResult.score}/100\n${findingCount} findings (${fileResult.findings.filter(f => f.severity === 'critical').length} critical, ${fileResult.findings.filter(f => f.severity === 'error').length} errors, ${fileResult.findings.filter(f => f.severity === 'warning').length} warnings)`,
-        command: 'ailinter.showFileDetails',
-        arguments: [document.fileName],
-      })
-    );
+    lenses.push(buildFileScoreLens(document, fileResult));
 
     // ── 2. Per-function / per-block issue clusters ──────────────────────────
-    const clusters = this.clusterFindings(document, fileResult.findings);
-
+    const clusters = clusterFindings(document, fileResult.findings);
     for (const cluster of clusters) {
-      const range = new vscode.Range(cluster.startLine, 0, cluster.startLine, 0);
-      const worst = worstSeverity(cluster.findings);
-      const icon = worst === 'critical' ? '🔴' : worst === 'error' ? '🟠' : '🟡';
-      const count = cluster.findings.length;
-
-      lenses.push(
-        new vscode.CodeLens(range, {
-          title: `${icon} ${count} issue${count !== 1 ? 's' : ''}${cluster.label ? ` — ${cluster.label}` : ''}`,
-          tooltip: cluster.findings.map(f => `[${f.severity}] ${f.message}`).join('\n'),
-          command: 'ailinter.focusIssues',
-          arguments: [cluster.findings.map(f => f.line)],
-        })
-      );
+      lenses.push(buildClusterLens(cluster));
     }
 
     return lenses;
   }
+}
 
-  /**
-   * Group findings into clusters (likely same function).
-   * Findings within FUNCTION_GROUP_LINES of each other form a cluster.
-   */
-  private clusterFindings(
-    document: vscode.TextDocument,
-    findings: AilinterFinding[]
-  ): { startLine: number; findings: AilinterFinding[]; label?: string }[] {
-    if (findings.length === 0) return [];
+// ── Module-level helpers ──────────────────────────────────────────────────────
 
-    // Get function name at a given line (heuristic)
-    const functionAtLine = (line: number): string | undefined => {
-      for (let l = line; l >= 0; l--) {
-        if (l >= document.lineCount) continue;
-        const text = document.lineAt(l).text;
-        // Match common function declarations
-        const funcMatch = text.match(
-          /(?:function\s+(\w+)|def\s+(\w+)|func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)|(\w+)\s*=\s*(?:function|\(|\w+\s*=>))/
-        );
-        if (funcMatch) {
-          return funcMatch[1] || funcMatch[2] || funcMatch[3] || funcMatch[4];
-        }
-      }
-      return undefined;
-    };
+function buildFileScoreLens(
+  document: vscode.TextDocument,
+  fileResult: { score: number; findings: AilinterFinding[] }
+): vscode.CodeLens {
+  const topRange = new vscode.Range(0, 0, 0, 0);
+  const findingCount = fileResult.findings.length;
 
-    // Sort by line
-    const sorted = [...findings].sort((a, b) => a.line - b.line);
-    const clusters: { startLine: number; findings: AilinterFinding[]; label?: string }[] = [];
-    let current: AilinterFinding[] = [sorted[0]];
+  const severityCounts = countFindingsBySeverity(fileResult.findings);
+  const tooltip = `File quality score: ${fileResult.score}/100\n${findingCount} findings (${severityCounts.critical} critical, ${severityCounts.error} errors, ${severityCounts.warning} warnings)`;
 
-    for (let i = 1; i < sorted.length; i++) {
-      const prev = sorted[i - 1];
-      const curr = sorted[i];
-      if (curr.line - prev.line <= FUNCTION_GROUP_LINES) {
-        current.push(curr);
-      } else {
-        clusters.push({
-          startLine: current[0].line,
-          findings: current,
-          label: functionAtLine(current[0].line),
-        });
-        current = [curr];
-      }
+  return new vscode.CodeLens(topRange, {
+    title: formatScoreTitle(fileResult.score, findingCount),
+    tooltip,
+    command: 'ailinter.showFileDetails',
+    arguments: [document.fileName],
+  });
+}
+
+function buildClusterLens(
+  cluster: { startLine: number; findings: AilinterFinding[]; label?: string }
+): vscode.CodeLens {
+  const range = new vscode.Range(cluster.startLine, 0, cluster.startLine, 0);
+  const worst = worstSeverity(cluster.findings);
+  const icon = worst === 'critical' ? '🔴' : worst === 'error' ? '🟠' : '🟡';
+  const count = cluster.findings.length;
+  const label = cluster.label ? ` — ${cluster.label}` : '';
+
+  return new vscode.CodeLens(range, {
+    title: `${icon} ${count} issue${count !== 1 ? 's' : ''}${label}`,
+    tooltip: cluster.findings.map(f => `[${f.severity}] ${f.message}`).join('\n'),
+    command: 'ailinter.focusIssues',
+    arguments: [cluster.findings.map(f => f.line)],
+  });
+}
+
+function formatScoreTitle(score: number, findingCount: number): string {
+  const scoreColor = score >= 80 ? '🟢' : score >= 60 ? '🟡' : '🔴';
+  return `${scoreColor} AILINTER: ${score}/100  —  ${findingCount} issue${findingCount !== 1 ? 's' : ''}`;
+}
+
+function countFindingsBySeverity(findings: AilinterFinding[]): { critical: number; error: number; warning: number } {
+  return {
+    critical: findings.filter(f => f.severity === 'critical').length,
+    error: findings.filter(f => f.severity === 'error').length,
+    warning: findings.filter(f => f.severity === 'warning').length,
+  };
+}
+
+/**
+ * Group findings into clusters (likely same function).
+ * Findings within FUNCTION_GROUP_LINES of each other form a cluster.
+ */
+function clusterFindings(
+  document: vscode.TextDocument,
+  findings: AilinterFinding[]
+): { startLine: number; findings: AilinterFinding[]; label?: string }[] {
+  if (findings.length === 0) return [];
+
+  // Sort by line
+  const sorted = [...findings].sort((a, b) => a.line - b.line);
+  const clusters: { startLine: number; findings: AilinterFinding[]; label?: string }[] = [];
+  let current: AilinterFinding[] = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    if (curr.line - prev.line <= FUNCTION_GROUP_LINES) {
+      current.push(curr);
+    } else {
+      clusters.push({
+        startLine: current[0].line,
+        findings: current,
+        label: findFunctionName(document, current[0].line),
+      });
+      current = [curr];
     }
-    clusters.push({
-      startLine: current[0].line,
-      findings: current,
-      label: functionAtLine(current[0].line),
-    });
-
-    return clusters;
   }
+  clusters.push({
+    startLine: current[0].line,
+    findings: current,
+    label: findFunctionName(document, current[0].line),
+  });
+
+  return clusters;
+}
+
+/**
+ * Get function name at a given line (heuristic).
+ * Scans backwards from the given line to find the nearest function declaration.
+ */
+function findFunctionName(document: vscode.TextDocument, line: number): string | undefined {
+  const FUNC_PATTERN = /(?:function\s+(\w+)|def\s+(\w+)|func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)|(\w+)\s*=\s*(?:function|\(|\w+\s*=>))/;
+  for (let l = line; l >= 0; l--) {
+    if (l >= document.lineCount) continue;
+    const text = document.lineAt(l).text;
+    const funcMatch = text.match(FUNC_PATTERN);
+    if (funcMatch) {
+      return funcMatch[1] || funcMatch[2] || funcMatch[3] || funcMatch[4];
+    }
+  }
+  return undefined;
 }
 
 function worstSeverity(findings: AilinterFinding[]): string {
