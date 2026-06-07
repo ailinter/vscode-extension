@@ -1,6 +1,11 @@
 /**
  * CodeLens provider: shows function-level quality scores and per-function
  * issue counts above each function — similar to CodeScene's inline annotations.
+ *
+ * Uses resolveCodeLens for lazy command resolution to avoid VS Code's
+ * CommandsConverter cache disposal issue (CS-5276 pattern from CodeScene).
+ * Commands with arguments are cached internally by VS Code and disposed when
+ * providers refresh — by resolving lazily, we avoid this caching entirely.
  */
 import * as vscode from 'vscode';
 import { AilinterFinding } from './types';
@@ -15,6 +20,16 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
 
   /** Per-file results: fileName → { score, findings } */
   private results = new Map<string, { score: number; findings: AilinterFinding[] }>();
+
+  /**
+   * Metadata for lazy CodeLens resolution.
+   * Keyed by `${range.start.line}:${range.start.character}` for uniqueness.
+   */
+  private lensMeta = new Map<string, {
+    filePath: string;
+    score: number;
+    findingCount: number;
+  }>();
 
   /** Getter for the number of cached results (for status reporting) */
   get cachedCount(): number {
@@ -33,6 +48,7 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
   /** Remove stale results for files that no longer exist */
   removeFile(filePath: string): void {
     this.results.delete(filePath);
+    this.lensMeta.clear();
     this._onDidChangeCodeLenses.fire();
   }
 
@@ -43,15 +59,47 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
     const lenses: vscode.CodeLens[] = [];
 
     // ── 1. File-level score at the very top ────────────────────────────────
-    lenses.push(buildFileScoreLens(document, fileResult));
+    const scoreLens = buildFileScoreLens(document, fileResult);
+    this.lensMeta.set('__file__', {
+      filePath: document.fileName,
+      score: fileResult.score,
+      findingCount: fileResult.findings.length,
+    });
+    lenses.push(scoreLens);
 
     // ── 2. Per-function / per-block issue clusters ──────────────────────────
     const clusters = clusterFindings(document, fileResult.findings);
     for (const cluster of clusters) {
-      lenses.push(buildClusterLens(cluster));
+      const clusterLens = buildClusterLens(cluster);
+      const key = `${cluster.startLine}:0`;
+      this.lensMeta.set(key, {
+        filePath: document.fileName,
+        score: fileResult.score,
+        findingCount: cluster.findings.length,
+      });
+      lenses.push(clusterLens);
     }
 
     return lenses;
+  }
+
+  /**
+   * Lazy command resolution — VS Code calls this when a CodeLens becomes visible.
+   * This avoids the CommandsConverter cache disposal issue that causes
+   * "Actual command not found" errors when providers refresh.
+   */
+  async resolveCodeLens(codeLens: vscode.CodeLens, _token: vscode.CancellationToken): Promise<vscode.CodeLens> {
+    const key = `${codeLens.range.start.line}:${codeLens.range.start.character}`;
+    const meta = this.lensMeta.get(key) || this.lensMeta.get('__file__');
+    if (meta && codeLens.command) {
+      codeLens.command.arguments = [meta.filePath];
+    }
+    return codeLens;
+  }
+
+  /** Clear lens metadata (e.g., on cache invalidation) */
+  clearMeta(): void {
+    this.lensMeta.clear();
   }
 }
 

@@ -24,6 +24,8 @@ import { AilinterCodeActionProvider } from './codeactions';
 import { CodeHealthMonitor } from './monitor';
 import { AilinterSidebarProvider } from './sidebar';
 import { updateDiagnostics } from './diagnostics';
+import { AilinterFileDecorationProvider } from './fileDecorations';
+import { enqueueScan } from './queue';
 import {
   createStatusBar,
   updateStatusBar,
@@ -43,6 +45,10 @@ let codeActionProvider: AilinterCodeActionProvider;
 let sidebarProvider: AilinterSidebarProvider;
 let healthMonitor: CodeHealthMonitor;
 let statusBar: vscode.StatusBarItem;
+let fileDecorationProvider: AilinterFileDecorationProvider;
+
+/** Per-file debounce timers for edit-triggered scans (onDidChangeTextDocument) */
+const changeTimers = new Map<string, NodeJS.Timeout>();
 
 // ── Activate ─────────────────────────────────────────────────────────────────
 
@@ -97,6 +103,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // ── Commands ───────────────────────────────────────────────────────────
   registerCommands(context);
 
+  // ── FileDecorationProvider (Explorer file badges) ──────────────────────
+  fileDecorationProvider = new AilinterFileDecorationProvider();
+  context.subscriptions.push(
+    vscode.window.registerFileDecorationProvider(fileDecorationProvider)
+  );
+
   // ── Event handlers ─────────────────────────────────────────────────────
   registerEventHandlers(context);
 
@@ -120,6 +132,13 @@ export function deactivate(): void {
   disposeDecorations();
   clearCache();
   healthMonitor.clear();
+
+  // Clear all pending debounce timers
+  for (const timer of changeTimers.values()) {
+    clearTimeout(timer);
+  }
+  changeTimers.clear();
+
   console.log('AILINTER extension deactivated');
 }
 
@@ -254,7 +273,35 @@ function registerEventHandlers(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidSaveTextDocument(async (document) => {
       const config = vscode.workspace.getConfiguration('ailinter');
       if (!config.get<boolean>('enable', true)) return;
+      // Always cancel any pending debounced edit scan — save is authoritative
+      const timer = changeTimers.get(document.fileName);
+      if (timer) {
+        clearTimeout(timer);
+        changeTimers.delete(document.fileName);
+      }
       await scanActiveFile(document);
+    })
+  );
+
+  // On edit: debounced scan after 1s of inactivity (catches auto-save, undo, etc.)
+  // Uses per-file timers (CodeScene pattern from open-files-observer.ts).
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      if (e.document.isUntitled) return;
+      const config = vscode.workspace.getConfiguration('ailinter');
+      if (!config.get<boolean>('enable', true)) return;
+
+      const filePath = e.document.fileName;
+      const existingTimer = changeTimers.get(filePath);
+      if (existingTimer) clearTimeout(existingTimer);
+
+      changeTimers.set(
+        filePath,
+        setTimeout(() => {
+          changeTimers.delete(filePath);
+          scanActiveFile(e.document);
+        }, 1000)
+      );
     })
   );
 
@@ -276,8 +323,13 @@ function registerEventHandlers(context: vscode.ExtensionContext): void {
 
   // On file close: clean up
   context.subscriptions.push(
-    vscode.workspace.onDidCloseTextDocument(() => {
-      // No cleanup needed — keep cache for reopen
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      // Cancel any pending debounced scan
+      const timer = changeTimers.get(document.fileName);
+      if (timer) {
+        clearTimeout(timer);
+        changeTimers.delete(document.fileName);
+      }
     })
   );
 
@@ -293,6 +345,32 @@ function registerEventHandlers(context: vscode.ExtensionContext): void {
       }
     })
   );
+
+  // ── Config file watcher: auto re-scan when .ailinter.toml changes ──────
+  // Invalidate cache and re-scan the active file so results reflect new config.
+  const configWatcher = vscode.workspace.createFileSystemWatcher('**/.ailinter.toml');
+  configWatcher.onDidChange(() => {
+    console.log('[ailinter] .ailinter.toml changed — clearing cache and re-scanning');
+    clearCache();
+    codeLensProvider.clearMeta();
+    const editor = vscode.window.activeTextEditor;
+    if (editor) scanActiveFile(editor.document);
+  });
+  configWatcher.onDidCreate(() => {
+    console.log('[ailinter] .ailinter.toml created — clearing cache and re-scanning');
+    clearCache();
+    codeLensProvider.clearMeta();
+    const editor = vscode.window.activeTextEditor;
+    if (editor) scanActiveFile(editor.document);
+  });
+  configWatcher.onDidDelete(() => {
+    console.log('[ailinter] .ailinter.toml deleted — clearing cache and re-scanning');
+    clearCache();
+    codeLensProvider.clearMeta();
+    const editor = vscode.window.activeTextEditor;
+    if (editor) scanActiveFile(editor.document);
+  });
+  context.subscriptions.push(configWatcher);
 }
 
 // ── Activation helpers ───────────────────────────────────────────────────────
@@ -415,7 +493,10 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
   let fileScore: FileScore;
 
   try {
-    fileScore = await scanAndCache(filePath, binaryPath, workspaceRoot);
+    // Use per-file queue to deduplicate concurrent scans of the same file
+    fileScore = await enqueueScan(filePath, () =>
+      scanAndCache(filePath, binaryPath, workspaceRoot)
+    );
   } catch (err) {
     fileScore = handleScanError(err, filePath, relativePath, document, diagnosticCollection);
   }
@@ -510,6 +591,11 @@ function updateAllProviders(
   // Diagnostics (Problems panel)
   try { updateDiagnostics(document, documentFindings, diagnosticCollection); }
   catch (e) { console.error('[ailinter] diagnostics error:', e); }
+
+  // File decorations (Explorer file badges)
+  try {
+    fileDecorationProvider.updateFileIssues(filePath, documentFindings.length);
+  } catch (e) { console.error('[ailinter] fileDecorations error:', e); }
 
   // Decorations (gutter icons + highlights)
   try {

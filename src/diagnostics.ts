@@ -62,7 +62,19 @@ export function updateDiagnostics(
       severity
     );
     diagnostic.source = `ailinter (${finding.category})`;
-    diagnostic.code = finding.smellType || finding.category;
+
+    // Click-to-docs: set code as an object with value + target URI.
+    // When the user clicks an issue, VS Code shows a "More Details" link
+    // that opens the ailinter documentation for the specific smell type.
+    // Uses the { value, target } shape on the `code` property (VS Code 1.88+).
+    if (finding.smellType) {
+      diagnostic.code = {
+        value: finding.smellType,
+        target: vscode.Uri.parse(`https://ailinter.dev/docs/quality#${finding.smellType}`),
+      };
+    } else {
+      diagnostic.code = finding.category;
+    }
 
     // Tag secrets and vulnerabilities as unnecessary (for special highlighting)
     if (finding.category === 'secret' || finding.category === 'vulnerability') {
