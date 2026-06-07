@@ -4,12 +4,24 @@
  * Orchestrates all providers:
  *   - Diagnostics (Problems panel)
  *   - Decorations (gutter icons + inline highlights)
- *   - CodeLens (function-level scores)
+ *   - CodeLens (function-level scores with delta)
  *   - Hover (refactoring guidance)
  *   - CodeActions (Quick Fix lightbulb)
  *   - Sidebar (project health tree view)
  *   - Status bar (score + delta)
- *   - Monitor (before/after delta tracking)
+ *   - Monitor (git merge-base delta tracking)
+ *   - Git poller (periodic git change detection)
+ *   - File system watcher (external change detection)
+ *   - Executor (concurrency limiting)
+ *   - Webview panel (rich documentation + refactoring)
+ *
+ * Phase 2 features:
+ *   - Git merge-base delta: compare scores against main branch
+ *   - Executor chain: concurrency-limited scanning
+ *   - Git change polling: detect external changes every 9s
+ *   - File system watcher: 1s debounced re-scan
+ *   - Delta-aware CodeLens: ▲/▼ score changes in annotations
+ *   - Beside-column webview: rich docs + refactoring panel
  *
  * Activation: on save, on file open
  */
@@ -26,6 +38,9 @@ import { AilinterSidebarProvider } from './sidebar';
 import { updateDiagnostics } from './diagnostics';
 import { AilinterFileDecorationProvider } from './fileDecorations';
 import { enqueueScan } from './queue';
+import { scanExecutor } from './executor';
+import { GitChangePoller } from './gitWatcher';
+import { AilinterWebviewPanel } from './webview/panel';
 import {
   createStatusBar,
   updateStatusBar,
@@ -34,6 +49,9 @@ import {
   setStatusBarScanning,
   setStatusBarStale,
 } from './statusbar';
+import { DeltaDashboardProvider } from './deltaDashboard';
+import { registerRulesCommands } from './rulesUI';
+import { SavedFilesTracker } from './savedFilesTracker';
 
 // ── Module-level state ───────────────────────────────────────────────────────
 
@@ -46,13 +64,23 @@ let sidebarProvider: AilinterSidebarProvider;
 let healthMonitor: CodeHealthMonitor;
 let statusBar: vscode.StatusBarItem;
 let fileDecorationProvider: AilinterFileDecorationProvider;
+let webviewPanel: AilinterWebviewPanel;
+let gitPoller: GitChangePoller | undefined;
+let deltaDashboard: DeltaDashboardProvider;
+let savedFilesTracker: SavedFilesTracker;
 
 /** Per-file debounce timers for edit-triggered scans (onDidChangeTextDocument) */
 const changeTimers = new Map<string, NodeJS.Timeout>();
 
+/** Extension context, stored on activate for use by commands */
+let extensionContext: vscode.ExtensionContext | undefined;
+
 // ── Activate ─────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Store context for use by command handlers
+  extensionContext = context;
+
   // ── Initialize core components ─────────────────────────────────────────
 
   // Diagnostics collection (Problems panel)
@@ -64,10 +92,14 @@ export function activate(context: vscode.ExtensionContext): void {
   setStatusBarIdle();
   context.subscriptions.push(statusBar);
 
-  // Health monitor (before/after delta tracking)
+  // Health monitor (git merge-base delta tracking)
   healthMonitor = new CodeHealthMonitor();
 
-  // CodeLens provider — function-level scores
+  // Webview panel (rich documentation + refactoring)
+  webviewPanel = new AilinterWebviewPanel();
+  context.subscriptions.push({ dispose: () => webviewPanel.dispose() });
+
+  // CodeLens provider — function-level scores with delta awareness
   codeLensProvider = new AilinterCodeLensProvider();
   codeLensRegistration = vscode.languages.registerCodeLensProvider(
     { scheme: 'file' },
@@ -100,8 +132,25 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider('ailinterSidebar', sidebarProvider)
   );
 
+  // ── Delta Dashboard webview view (Feature 1) ─────────────────────────
+  deltaDashboard = new DeltaDashboardProvider();
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      DeltaDashboardProvider.viewType,
+      deltaDashboard
+    )
+  );
+
+  // ── Saved Files Tracker (Feature 3) ───────────────────────────────────
+  savedFilesTracker = new SavedFilesTracker(context);
+  savedFilesTracker.start();
+  context.subscriptions.push({ dispose: () => savedFilesTracker.dispose() });
+
   // ── Commands ───────────────────────────────────────────────────────────
   registerCommands(context);
+
+  // ── Register rules customization commands (Feature 2) ──────────────────
+  registerRulesCommands(context);
 
   // ── FileDecorationProvider (Explorer file badges) ──────────────────────
   fileDecorationProvider = new AilinterFileDecorationProvider();
@@ -112,6 +161,52 @@ export function activate(context: vscode.ExtensionContext): void {
   // ── Event handlers ─────────────────────────────────────────────────────
   registerEventHandlers(context);
 
+  // ── Git Change Poller ──────────────────────────────────────────────────
+  // Periodically detects files changed via external tools (rebases, stashes).
+  // Feature 3: Only re-scans files the user actually saved in the editor.
+  // CodeScene pattern: GitChangeLister with 9s polling cadence.
+  const wsFolders = vscode.workspace.workspaceFolders;
+  const workspaceRoot = wsFolders?.length ? wsFolders[0].uri.fsPath : undefined;
+  if (workspaceRoot) {
+    gitPoller = new GitChangePoller(workspaceRoot, 9000);
+    gitPoller.onDidChangeFiles((files) => {
+      const activeFile = vscode.window.activeTextEditor?.document.fileName;
+      if (activeFile && files.includes(vscode.workspace.asRelativePath(activeFile))) {
+        // Feature 3: Only re-scan if the user saved this file in the editor
+        if (savedFilesTracker.wasSavedByUser(activeFile)) {
+          scanActiveFile(vscode.window.activeTextEditor!.document);
+          // Clear the tracker entry so we don't re-scan on the next poll
+          savedFilesTracker.removeFromTracker(activeFile);
+        }
+      }
+    });
+    gitPoller.start();
+    context.subscriptions.push({ dispose: () => gitPoller?.stop() });
+  }
+
+  // ── File System Watcher ────────────────────────────────────────────────
+  // Watches for external file changes (e.g., git checkout, editor outside VS Code).
+  // Uses 1s debounce to avoid thrashing (CodeScene pattern from git-change-observer.ts).
+  const fileWatcher = vscode.workspace.createFileSystemWatcher(
+    '**/*.{go,py,js,ts,jsx,tsx,java,cs,php,rb}'
+  );
+  let watcherTimer: NodeJS.Timeout | undefined;
+
+  const handleExternalChange = (uri: vscode.Uri) => {
+    const activeFile = vscode.window.activeTextEditor?.document.fileName;
+    if (activeFile === uri.fsPath) {
+      if (watcherTimer) clearTimeout(watcherTimer);
+      watcherTimer = setTimeout(() => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) scanActiveFile(editor.document);
+      }, 1000); // 1s debounce like CodeScene GitChangeObserver
+    }
+  };
+
+  fileWatcher.onDidChange(handleExternalChange);
+  fileWatcher.onDidCreate(handleExternalChange);
+  context.subscriptions.push(fileWatcher);
+
   // ── Scan active file on activation ─────────────────────────────────────
   scanActiveFileOnActivation();
 
@@ -119,12 +214,13 @@ export function activate(context: vscode.ExtensionContext): void {
   showFirstRunWelcome(context);
 
   // ── Log activation ─────────────────────────────────────────────────────
-  console.log('AILINTER extension activated — CodeScene-inspired UX loaded');
+  console.log('AILINTER extension activated — Phase 2: git delta, executor, watchers, webview');
 }
 
 // ── Deactivate ───────────────────────────────────────────────────────────────
 
 export function deactivate(): void {
+  if (gitPoller) gitPoller.stop();
   if (diagnosticCollection) {
     diagnosticCollection.clear();
     diagnosticCollection.dispose();
@@ -132,6 +228,7 @@ export function deactivate(): void {
   disposeDecorations();
   clearCache();
   healthMonitor.clear();
+  webviewPanel.dispose();
 
   // Clear all pending debounce timers
   for (const timer of changeTimers.values()) {
@@ -149,8 +246,6 @@ export function deactivate(): void {
  * Extracted from activate() to reduce function length and bump count.
  */
 function registerCommands(context: vscode.ExtensionContext): void {
-  // Each callback is extracted to a named handler function to avoid bumpy_road
-  // from inline closures creating indentation bumps.
   context.subscriptions.push(
     vscode.commands.registerCommand('ailinter.showFileDetails', handleShowFileDetails)
   );
@@ -175,6 +270,13 @@ function registerCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('ailinter.openWalkthrough', handleOpenWalkthrough)
   );
+  // Phase 2: webview documentation commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ailinter.openDocs', handleOpenDocs)
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ailinter.openRefactoring', handleOpenRefactoring)
+  );
 }
 
 // ── Command handlers ──────────────────────────────────────────────────────────
@@ -190,11 +292,8 @@ function handleShowFileDetails(filePath?: string): void {
     vscode.window.showInformationMessage(`AILINTER — No scan results for ${vscode.workspace.asRelativePath(path)}. Save the file to scan.`);
     return;
   }
-  const delta = healthMonitor.getDeltaString(path);
-  vscode.window.showInformationMessage(
-    `AILINTER — ${vscode.workspace.asRelativePath(path)}: ${cached.score}/100${delta ? ` (${delta})` : ''} — ${cached.findings.length} issues`,
-    { modal: false }
-  );
+  // Open Problems panel (same as Cmd+Shift+M)
+  vscode.commands.executeCommand('workbench.actions.view.problems');
 }
 
 function handleFocusIssues(lines: number[]): void {
@@ -207,7 +306,19 @@ function handleFocusIssues(lines: number[]): void {
 }
 
 function handleGetStrategy(args: { smell: string; file: string; line: number }): void {
-  const { smell } = args;
+  const { smell, file, line } = args;
+
+  // Try to open the webview panel first; fall back to external URL
+  try {
+    const context = getExtensionContext();
+    if (context) {
+      webviewPanel.showRefactoring(smell, file, line, context);
+      return;
+    }
+  } catch {
+    // Fall through to external URL
+  }
+
   vscode.env.openExternal(vscode.Uri.parse(`https://ailinter.dev/docs/smells/${smell}`));
   const message = `Refactoring strategy for "${smell}": Extract method → simplify control flow → reduce nesting. See ailinter.dev/docs/smells/${smell} for details.`;
   vscode.window.showInformationMessage(message, { modal: false });
@@ -255,6 +366,28 @@ async function handleScanFileCommand(): Promise<void> {
     return;
   }
   await scanActiveFile(editor.document);
+}
+
+/**
+ * Phase 2: Open webview documentation for a code smell.
+ * Triggered from hover, diagnostics, or command palette.
+ */
+function handleOpenDocs(args: { smell: string }): void {
+  const context = getExtensionContext();
+  if (context) {
+    webviewPanel.showDocumentation(args.smell, context);
+  }
+}
+
+/**
+ * Phase 2: Open webview refactoring panel for a code smell.
+ * Triggered from CodeAction "Open Docs Panel" or other entry points.
+ */
+function handleOpenRefactoring(args: { smell: string; file: string; line: number }): void {
+  const context = getExtensionContext();
+  if (context) {
+    webviewPanel.showRefactoring(args.smell, args.file, args.line, context);
+  }
 }
 
 function handleOpenWalkthrough(): void {
@@ -312,10 +445,13 @@ function registerEventHandlers(context: vscode.ExtensionContext): void {
       const cached = getCachedResult(editor.document.fileName);
       if (cached) {
         applyDecorations(editor, cached.findings);
+        updateStatusBar(cached.score, { delta: cached.delta });
       } else {
         const config = vscode.workspace.getConfiguration('ailinter');
         if (config.get<boolean>('scanOnOpen', true)) {
           scanActiveFile(editor.document);
+        } else {
+          setStatusBarIdle();
         }
       }
     })
@@ -347,7 +483,6 @@ function registerEventHandlers(context: vscode.ExtensionContext): void {
   );
 
   // ── Config file watcher: auto re-scan when .ailinter.toml changes ──────
-  // Invalidate cache and re-scan the active file so results reflect new config.
   const configWatcher = vscode.workspace.createFileSystemWatcher('**/.ailinter.toml');
   configWatcher.onDidChange(() => {
     console.log('[ailinter] .ailinter.toml changed — clearing cache and re-scanning');
@@ -390,7 +525,6 @@ function scanActiveFileOnActivation(): void {
 
 /**
  * Show the first-run welcome message with a one-time delay.
- * Extracted from activate() to reduce function length.
  */
 function showFirstRunWelcome(context: vscode.ExtensionContext): void {
   const hasShownWelcome = context.globalState.get<boolean>('ailinter.welcomeShown');
@@ -417,17 +551,6 @@ function showFirstRunWelcome(context: vscode.ExtensionContext): void {
 /**
  * Filter findings to only include those matching the given file path.
  * This ensures status bar count matches Problems panel count.
- *
- * Root cause of mismatch: ailinter CLI `--format problems` output includes
- * metalinter (govet/staticcheck) findings with mangled file paths
- * (e.g., "/path/file.go:34:16:1:1: [govet] ...") that don't match any real
- * document path. These are filtered by updateDiagnostics/applyDecorations
- * but were still counted in fileScore.findings.length.
- *
- * Resolution strategy (tried in order):
- * 1. If finding path is absolute → compare directly
- * 2. If finding path is relative → resolve against workspace root first
- *    (this is where the CLI was invoked from), then doc dir as fallback
  */
 export function filterFindingsByFile(
   findings: AilinterFinding[],
@@ -465,6 +588,11 @@ export function filterFindingsByFile(
  * Scan a document, update all providers with the results.
  * This is the central coordination point.
  *
+ * Phase 2 enhancements:
+ *  - Concurrency-limited via scanExecutor
+ *  - Git merge-base delta computed alongside in-memory delta
+ *  - Delta passed through to CodeLens provider
+ *
  * BULLETPROOF design:
  * - Only scanAndCache is wrapped in try/catch
  * - fileScore is ALWAYS defined after the try/catch block
@@ -479,6 +607,9 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
   const filePath = document.fileName;
   const relativePath = vscode.workspace.asRelativePath(filePath);
 
+  const wsFolders = vscode.workspace.workspaceFolders;
+  const workspaceRoot = wsFolders?.length ? wsFolders[0].uri.fsPath : undefined;
+
   // ── 1. Pre-scan: snapshot current score ────────────────────────────────
   const cachedBefore = getCachedResult(filePath);
   healthMonitor.snapshotBefore(filePath, cachedBefore?.score);
@@ -486,16 +617,16 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
   // ── 2. Update UI — scanning state ──────────────────────────────────────
   setStatusBarScanning(relativePath);
 
-  // ── 3. Run ailinter (only this is in try/catch) ────────────────────────
-  const wsFolders = vscode.workspace.workspaceFolders;
-  const workspaceRoot = wsFolders?.length ? wsFolders[0].uri.fsPath : undefined;
-
+  // ── 3. Run ailinter (concurrency-limited via scanExecutor) ─────────────
   let fileScore: FileScore;
 
   try {
-    // Use per-file queue to deduplicate concurrent scans of the same file
+    // Use per-file queue to deduplicate concurrent scans of the same file,
+    // AND the concurrency-limiting executor to limit total binary invocations.
     fileScore = await enqueueScan(filePath, () =>
-      scanAndCache(filePath, binaryPath, workspaceRoot)
+      scanExecutor.execute(() =>
+        scanAndCache(filePath, binaryPath, workspaceRoot)
+      )
     );
   } catch (err) {
     fileScore = handleScanError(err, filePath, relativePath, document, diagnosticCollection);
@@ -503,21 +634,43 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
 
   // ── fileScore IS GUARANTEED DEFINED HERE ───────────────────────────────
 
-  // Compute delta (safe even if scan failed — monitor has the before snapshot)
+  // ── 4. Compute deltas ──────────────────────────────────────────────────
+  // In-memory delta (before/after snapshot)
   const delta = healthMonitor.snapshotAfter(filePath, fileScore.score);
 
-  // Filter findings by document path — ensures all providers see consistent set
+  // Git merge-base delta (compare vs main branch)
+  let gitDelta: number | undefined;
+  try {
+    gitDelta = await healthMonitor.computeGitDelta(
+      filePath,
+      fileScore.score,
+      binaryPath,
+      workspaceRoot
+    );
+  } catch {
+    gitDelta = undefined; // Silent fail — git might not be available
+  }
+
+  // ── 5. Filter findings ─────────────────────────────────────────────────
   const documentFindings = filterFindingsByFile(fileScore.findings, filePath);
   const totalRaw = fileScore.findings.length;
   const filteredCount = totalRaw - documentFindings.length;
 
   console.log(
     `[ailinter:scan] "${relativePath}": ${totalRaw} raw findings → ` +
-    `${documentFindings.length} for this file (${filteredCount} filtered out)`
+    `${documentFindings.length} for this file (${filteredCount} filtered out)` +
+    (gitDelta !== undefined ? ` | git-delta: ${gitDelta}` : '')
   );
 
-  // ── Update all providers — each in its own try-catch ───────────────────
+  // ── 6. Update all providers ────────────────────────────────────────────
   updateAllProviders(document, filePath, fileScore, documentFindings, delta, relativePath, cachedBefore);
+
+  // Store git delta in CodeLens for delta-aware display
+  try {
+    codeLensProvider.updateResults(filePath, fileScore.score, documentFindings, delta, gitDelta);
+  } catch (e) {
+    console.error('[ailinter] codelens delta update error:', e);
+  }
 }
 
 // ── Scan error handler ────────────────────────────────────────────────────────
@@ -525,7 +678,6 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
 /**
  * Handle a scan failure by returning a FileScore from cache or creating an
  * empty error result. Shows warnings and updates status bar to reflect error.
- * Extracted from scanActiveFile() to reduce function length and nesting depth.
  */
 function handleScanError(
   err: unknown,
@@ -540,7 +692,7 @@ function handleScanError(
   const cached = getCachedResult(filePath);
   if (cached) {
     const result: FileScore = { ...cached, lastScanned: new Date() };
-    updateStatusBar(cached.score, { delta: undefined, findingCount: cached.findings.length, fileName: filePath });
+    updateStatusBar(cached.score);
     setStatusBarStale();
     vscode.window.showWarningMessage(
       `AILINTER scan failed for ${relativePath}. Showing cached score (${cached.lastScanned.toLocaleTimeString()}).`,
@@ -577,7 +729,6 @@ function handleScanError(
  * codelens, hover, code actions, status bar, sidebar).
  * Each provider update is wrapped in its own try-catch so one failure doesn't
  * cascade and kill the entire scan.
- * Extracted from scanActiveFile() to reduce function length and bump count.
  */
 function updateAllProviders(
   document: vscode.TextDocument,
@@ -605,9 +756,7 @@ function updateAllProviders(
     }
   } catch (e) { console.error('[ailinter] decorations error:', e); }
 
-  // CodeLens (function-level scores)
-  try { codeLensProvider.updateResults(filePath, fileScore.score, documentFindings); }
-  catch (e) { console.error('[ailinter] codelens error:', e); }
+  // CodeLens (function-level scores) — updated separately with delta
 
   // Hover (refactoring guidance)
   try { hoverProvider.updateFindings(filePath, documentFindings); }
@@ -618,11 +767,15 @@ function updateAllProviders(
   catch (e) { console.error('[ailinter] codeactions error:', e); }
 
   // Status bar — ALWAYS updates
-  updateStatusBar(fileScore.score, { delta, findingCount: documentFindings.length, fileName: filePath });
+  updateStatusBar(fileScore.score, { delta });
 
   // Sidebar (project health)
   try { updateSidebar(); }
   catch (e) { console.error('[ailinter] sidebar error:', e); }
+
+  // Delta Dashboard (Feature 1) — update with all cached results
+  try { updateDeltaDashboard(); }
+  catch (e) { console.error('[ailinter] deltaDashboard error:', e); }
 
   // Regression notification
   try {
@@ -675,4 +828,31 @@ function updateSidebar(): void {
   };
 
   sidebarProvider.update(health, allScores);
+}
+
+// ── Delta Dashboard Update (Feature 1) ────────────────────────────────────────
+
+/**
+ * Push all cached scan results to the delta dashboard webview.
+ * Called after every scan and on cache changes.
+ */
+function updateDeltaDashboard(): void {
+  const allScores = getAllCachedResults();
+  const entries = allScores.map(f => ({
+    path: f.path,
+    score: f.score,
+    delta: f.delta,
+    findings: f.findings.length,
+  }));
+  deltaDashboard.update(entries);
+}
+
+// ── Extension context access ──────────────────────────────────────────────────
+
+/**
+ * Get the extension context stored during activation.
+ * Used by commands that need to pass context to the webview panel.
+ */
+function getExtensionContext(): vscode.ExtensionContext | undefined {
+  return extensionContext;
 }

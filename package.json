@@ -66,8 +66,37 @@
         "command": "ailinter.openWalkthrough",
         "title": "AILINTER: Open Getting Started walkthrough",
         "icon": "$(book)"
+      },
+      {
+        "command": "ailinter.openDocs",
+        "title": "AILINTER: Open Smell Documentation",
+        "category": "AILINTER"
+      },
+      {
+        "command": "ailinter.openRefactoring",
+        "title": "AILINTER: Open Refactoring Panel",
+        "category": "AILINTER"
+      },
+      {
+        "command": "ailinter.createRulesTemplate",
+        "title": "AILINTER: Create/Edit .ailinter.toml for folder",
+        "category": "AILINTER"
+      },
+      {
+        "command": "ailinter.editRules",
+        "title": "AILINTER: Find and edit rules file for current file",
+        "category": "AILINTER"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "ailinter.createRulesTemplate",
+          "when": "explorerResourceIsFolder",
+          "group": "ailinter@1"
+        }
+      ]
+    },
     "walkthroughs": [
       {
         "id": "ailinter.gettingStarted",
@@ -128,6 +157,13 @@
           "id": "ailinterSidebar",
           "name": "AILINTER"
         }
+      ],
+      "ailinter": [
+        {
+          "id": "ailinter.deltaDashboard",
+          "name": "Code Health Delta",
+          "type": "webview"
+        }
       ]
     },
     "configuration": {
@@ -178,5 +214,8 @@
     "@types/vscode": "^1.86.0",
     "typescript": "^5.3.0",
     "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "@vscode/webview-ui-toolkit": "^1.4.0"
   }
 }
