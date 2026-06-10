@@ -1,6 +1,6 @@
 # AILINTER — AI Code Safety Visor for VS Code
 
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-v0.2.0-007ACC?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=ailinter.ailinter)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-v0.3.0-007ACC?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=ailinter.ailinter)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Open VSX](https://img.shields.io/badge/Open%20VSX-Registry-9146FF)](https://open-vsx.org/)
 [![AILINTER](https://img.shields.io/badge/AILINTER-30MB%20binary-6e41e2)](https://ailinter.dev)
@@ -69,19 +69,22 @@ Open the AILINTER sidebar in the Explorer panel (`View → Explorer → AILINTER
 
 ## Quick Start
 
-### Prerequisites
+### Zero-Config Setup
 
-You need the AILINTER binary installed:
+The extension automatically downloads and installs the AILINTER CLI when first activated — no terminal commands required.
 
+1. **Install** the extension from the VS Code Marketplace
+2. **Open** any Go, Python, JavaScript, TypeScript, or Java file
+3. **Save** (`Cmd+S`) — if the CLI isn't found, AILINTER will offer to download it automatically
+4. That's it — no `brew`, no manual install, no PATH configuration
+
+If you prefer to manage the CLI yourself:
 ```bash
 # macOS (Homebrew)
 brew install ailinter/ailinter/ailinter
 
-# Linux / Windows
-# Download from: https://github.com/ailinter/ailinter/releases
-
-# Verify installation
-ailinter version
+# Linux / Windows — download from GitHub Releases
+# https://github.com/ailinter/ailinter/releases
 ```
 
 ### Using the Extension
@@ -114,12 +117,13 @@ All commands are available via the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ailinter.path` | `"ailinter"` | Path to the AILINTER binary (`/usr/local/bin/ailinter`, etc.) |
+| `ailinter.path` | `""` (auto-detect) | Path to the AILINTER binary. Leave blank to auto-detect or auto-download. |
 | `ailinter.enable` | `true` | Enable scanning on file save |
 | `ailinter.scanOnOpen` | `true` | Automatically scan files when opened |
 | `ailinter.qualityThreshold` | `80` | Minimum score (0–100). Files below this show warnings. |
 | `ailinter.showGutterIcons` | `true` | Show severity icons in the gutter |
 | `ailinter.showCodeLens` | `true` | Show function-level score annotations |
+| `ailinter.cliUpdateChannel` | `"stable"` | Update channel: `"stable"` (recommended) or `"latest"` (pre-releases) |
 
 ---
 
@@ -136,18 +140,15 @@ All commands are available via the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+
 ## Requirements
 
 - **VS Code** 1.86.0 or later
-- **AILINTER binary** installed on your system (`ailinter` in PATH, or configure `ailinter.path`)
+- **AILINTER CLI** — auto-downloaded on first activation (or install manually via brew / GitHub Releases)
 - Supported languages: Go, Python, JavaScript, TypeScript, Java, C#, PHP (more coming)
 
 ---
 
 ## Tips
 
-- **First scan?** Open any file and save it. The status bar updates immediately.
-- **Watch the delta**: AILINTER tracks before/after scores on each save — green means you improved the code.
-- **Secrets stay safe**: Secrets found by AILINTER are never sent to AI tools — only redacted previews appear.
-- **Custom binary path**: If `ailinter` isn't in your PATH, set `ailinter.path` in settings.
-- **Notifications**: AILINTER warns you if a file's score regresses (drops) after a save.
+- **Auto-install**: If the CLI isn't found, AILINTER offers to download it. Accept once — it's cached for all future sessions.
+- **Manual CLI**: Want to manage versions yourself? Install via `brew` or download from [GitHub Releases](https://github.com/ailinter/ailinter/releases). The extension will detect it automatically.
 
 ---
 
@@ -155,7 +156,7 @@ All commands are available via the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+
 
 - **Windows**: The extension has been tested on macOS and Linux. Windows support is experimental. Report issues on [GitHub](https://github.com/ailinter/ailinter/issues).
 - **Large files**: Files over 1000 lines may take a few seconds to scan. Performance optimizations are in progress.
-- **First scan delay**: The initial scan downloads detection rules. Subsequent scans are instant.
+- **First scan delay**: On first activation, the extension downloads the AILINTER CLI (~30 MB). Subsequent scans are instant.
 
 ---
 
@@ -165,12 +166,13 @@ To configure AILINTER in VS Code:
 
 ```json
 {
-  "ailinter.path": "/opt/homebrew/bin/ailinter",
+  "ailinter.path": "",
   "ailinter.enable": true,
   "ailinter.scanOnOpen": true,
   "ailinter.qualityThreshold": 75,
   "ailinter.showGutterIcons": true,
-  "ailinter.showCodeLens": true
+  "ailinter.showCodeLens": true,
+  "ailinter.cliUpdateChannel": "stable"
 }
 ```
 
@@ -192,6 +194,12 @@ MIT © [AILINTER](https://ailinter.dev)
 
 ---
 
+## What's New in v0.3.0
+
+- **🚀 Auto-install CLI** — The extension downloads and installs the AILINTER binary automatically. No more manual `brew install`.
+- **Zero-config setup** — Install the extension, save a file, done. The CLI is detected, downloaded, and configured for you.
+- **Graceful offline handling** — Clear messaging when no internet connection is available.
+
 ## What's New in v0.2.0
 
 - **Project health sidebar** — overview of your entire workspace's code health
@@ -200,4 +208,3 @@ MIT © [AILINTER](https://ailinter.dev)
 - **Quick Fix: Replace secret** — one-click secret-to-env-var conversion
 - **CodeLens annotations** — function-level scores inline
 - **Configurable gutter icons** — toggle decorations in settings
-- **Refactoring strategy links** — get detailed fix guides for any smell
