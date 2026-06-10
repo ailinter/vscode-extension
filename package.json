@@ -2,7 +2,7 @@
   "name": "ailinter",
   "displayName": "AILINTER — AI Code Safety Visor",
   "description": "Code quality scoring, secret detection, and vulnerability scanning with inline decorations, CodeLens, hover guidance, Quick Fixes, and project health sidebar",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "ailinter",
   "license": "MIT",
   "icon": "icon.png",
@@ -106,7 +106,7 @@
           {
             "id": "install",
             "title": "1. Install AILINTER Binary",
-            "description": "Make sure the AILINTER binary is installed on your system.\n\n**macOS (Homebrew):**\n```bash\nbrew install ailinter/ailinter/ailinter\n```\n\n**Linux/Windows:**\nDownload the binary from [GitHub Releases](https://github.com/ailinter/ailinter/releases) and add it to your PATH.\n\nVerify with: `ailinter version`\n\n> 💡 Don't have the binary yet? You can still open files — scan results will appear once `ailinter` is available.",
+            "description": "Make sure the AILINTER binary is installed on your system.\n\nThe extension can **automatically download** the CLI for you when you first activate it. Simply click \"Download\" when prompted.\n\n**Manual install options:**\n- **macOS (Homebrew):**\n  ```bash\n  brew install ailinter/ailinter/ailinter\n  ```\n- **Linux/Windows:**\n  Download the binary from [GitHub Releases](https://github.com/ailinter/ailinter/releases) and add it to your PATH\n\nVerify with: `ailinter version`\n\n> 💡 Don't have the binary yet? The extension will prompt you to download it automatically on startup.",
             "media": {
               "image": "icon.png",
               "altText": "AILINTER logo — shield icon"
@@ -171,8 +171,18 @@
       "properties": {
         "ailinter.path": {
           "type": "string",
-          "default": "ailinter",
-          "description": "Path to the ailinter binary (e.g., /usr/local/bin/ailinter)"
+          "default": "",
+          "description": "Path to the ailinter binary. Leave blank to auto-detect or auto-download."
+        },
+        "ailinter.cliUpdateChannel": {
+          "type": "string",
+          "default": "stable",
+          "enum": ["stable", "latest"],
+          "enumDescriptions": [
+            "Download the latest stable release (recommended)",
+            "Download the absolute latest release including pre-releases"
+          ],
+          "description": "Update channel for auto-downloaded AILINTER CLI"
         },
         "ailinter.enable": {
           "type": "boolean",

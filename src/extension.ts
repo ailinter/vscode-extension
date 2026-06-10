@@ -52,6 +52,7 @@ import {
 import { DeltaDashboardProvider } from './deltaDashboard';
 import { registerRulesCommands } from './rulesUI';
 import { SavedFilesTracker } from './savedFilesTracker';
+import { checkAndPromptInstall } from './cli-installer';
 
 // ── Module-level state ───────────────────────────────────────────────────────
 
@@ -75,11 +76,48 @@ const changeTimers = new Map<string, NodeJS.Timeout>();
 /** Extension context, stored on activate for use by commands */
 let extensionContext: vscode.ExtensionContext | undefined;
 
+/** Whether the AILINTER CLI was found or auto-installed */
+let cliAvailable = false;
+
 // ── Activate ─────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
   // Store context for use by command handlers
   extensionContext = context;
+
+  // ── CLI auto-install ────────────────────────────────────────────────────
+  // Check if the AILINTER CLI is available; if not, offer to download it.
+  checkAndPromptInstall(context).then((resolvedPath) => {
+    if (resolvedPath) {
+      cliAvailable = true;
+      console.log(`[ailinter] CLI ready at: ${resolvedPath}`);
+      // Update config to point to the resolved binary (auto-detected or downloaded)
+      const config = vscode.workspace.getConfiguration('ailinter');
+      config.update('path', resolvedPath, vscode.ConfigurationTarget.Global);
+    } else {
+      cliAvailable = false;
+      console.log('[ailinter] CLI not available — install manually or restart');
+      // Show a one-time warning with actionable options
+      vscode.window.showInformationMessage(
+        '🛡️ AILINTER: Install the CLI to start scanning. Run: brew install ailinter',
+        'Download Now',
+        'Learn More'
+      ).then((selection) => {
+        if (selection === 'Download Now') {
+          // Retry download and install
+          checkAndPromptInstall(context).then((path) => {
+            if (path) {
+              cliAvailable = true;
+              const config = vscode.workspace.getConfiguration('ailinter');
+              config.update('path', path, vscode.ConfigurationTarget.Global);
+            }
+          });
+        } else if (selection === 'Learn More') {
+          vscode.env.openExternal(vscode.Uri.parse('https://ailinter.dev'));
+        }
+      });
+    }
+  });
 
   // ── Initialize core components ─────────────────────────────────────────
 
@@ -515,6 +553,7 @@ function registerEventHandlers(context: vscode.ExtensionContext): void {
  * Called once on activation.
  */
 function scanActiveFileOnActivation(): void {
+  if (!cliAvailable) return; // CLI not ready yet — skip initial scan
   const editor = vscode.window.activeTextEditor;
   if (!editor) return;
   const config = vscode.workspace.getConfiguration('ailinter');
@@ -601,8 +640,15 @@ export function filterFindingsByFile(
  * - Status bar always updates with whatever score we have
  */
 async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
+  // Skip scanning if CLI is not available
+  if (!cliAvailable) {
+    setStatusBarIdle();
+    return;
+  }
+
   const config = vscode.workspace.getConfiguration('ailinter');
-  const binaryPath = config.get<string>('path', 'ailinter');
+  const configPath = config.get<string>('path', '');
+  const binaryPath = configPath || 'ailinter'; // Fall back to PATH as default
 
   const filePath = document.fileName;
   const relativePath = vscode.workspace.asRelativePath(filePath);
