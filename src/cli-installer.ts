@@ -11,6 +11,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { sendEvent } from './telemetry';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,7 @@ export async function checkAndPromptInstall(
   if (configuredPath) {
     if (await isAilinterAvailable(configuredPath)) {
       console.log(`[ailinter] Using configured path: ${configuredPath}`);
+      sendEvent('cli.already_installed', { source: 'auto' });
       return configuredPath;
     }
     console.log(`[ailinter] Configured path "${configuredPath}" not found — falling back`);
@@ -99,6 +101,7 @@ export async function checkAndPromptInstall(
   const pathBinary = 'ailinter';
   if (await isAilinterAvailable(pathBinary)) {
     console.log('[ailinter] Found ailinter on PATH');
+    sendEvent('cli.already_installed', { source: 'brew' });
     return pathBinary;
   }
 
@@ -109,6 +112,7 @@ export async function checkAndPromptInstall(
       console.log(`[ailinter] Found cached binary at: ${cachedPath}`);
       // Update config so other components use this path
       config.update('path', cachedPath, vscode.ConfigurationTarget.Global);
+      sendEvent('cli.already_installed', { source: 'cached' });
       return cachedPath;
     }
     // Stale cache entry — remove it so we can re-download
@@ -116,6 +120,8 @@ export async function checkAndPromptInstall(
   }
 
   // ── Step 4: Prompt user to download ────────────────────────────────────
+  sendEvent('cli.install.prompted');
+
   const selection = await vscode.window.showInformationMessage(
     '🛡️ AILINTER CLI not found. Download and install automatically?',
     'Download',
@@ -128,11 +134,18 @@ export async function checkAndPromptInstall(
       if (downloadedPath) {
         // Update the status bar to show AILINTER is ready
         vscode.commands.executeCommand('setContext', 'ailinter:cliReady', true);
+        sendEvent('cli.already_installed', { source: 'auto' });
         return downloadedPath;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[ailinter] Download failed: ${message}`);
+      sendEvent('cli.install.failed', {
+        error_type: message.toLowerCase().includes('timeout') ? 'timeout'
+          : message.toLowerCase().includes('rate limit') ? 'rate_limit'
+          : message.toLowerCase().includes('corrupted') ? 'corrupted'
+          : 'unknown',
+      });
       vscode.window.showErrorMessage(
         `Failed to download AILINTER CLI: ${message}. ` +
         'Install manually with: brew install ailinter/ailinter/ailinter'
@@ -167,6 +180,7 @@ export async function downloadAndInstall(
   const channel = config.get<string>('cliUpdateChannel', 'stable');
   const includePrerelease = channel === 'latest';
   const release = await fetchLatestRelease(includePrerelease);
+  sendEvent('cli.install.started', { channel });
 
   // ── 2. Find the matching asset for this platform ───────────────────────
   const assetName = getAssetName(release.tag_name, platform);
@@ -188,6 +202,7 @@ export async function downloadAndInstall(
   const binaryPath = path.join(installDir, binaryName);
 
   // ── 4. Download with progress ──────────────────────────────────────────
+  const downloadStartTime = Date.now();
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -221,6 +236,10 @@ export async function downloadAndInstall(
   config.update('path', binaryPath, vscode.ConfigurationTarget.Global);
 
   console.log(`[ailinter] Successfully installed CLI at: ${binaryPath}`);
+  sendEvent('cli.install.completed', {
+    duration_seconds: Math.round((Date.now() - downloadStartTime) / 1000),
+    channel,
+  });
   return binaryPath;
 }
 

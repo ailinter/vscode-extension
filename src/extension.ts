@@ -53,6 +53,7 @@ import { DeltaDashboardProvider } from './deltaDashboard';
 import { registerRulesCommands } from './rulesUI';
 import { SavedFilesTracker } from './savedFilesTracker';
 import { checkAndPromptInstall } from './cli-installer';
+import { initializeTelemetry, sendEvent } from './telemetry';
 
 // ── Module-level state ───────────────────────────────────────────────────────
 
@@ -84,6 +85,10 @@ let cliAvailable = false;
 export function activate(context: vscode.ExtensionContext): void {
   // Store context for use by command handlers
   extensionContext = context;
+
+  // ── Initialize telemetry ───────────────────────────────────────────────
+  initializeTelemetry(context);
+  sendEvent('extension.activated', { first_run: !context.globalState.get('ailinter.welcomeShown') });
 
   // ── CLI auto-install ────────────────────────────────────────────────────
   // Check if the AILINTER CLI is available; if not, offer to download it.
@@ -320,6 +325,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
 // ── Command handlers ──────────────────────────────────────────────────────────
 
 function handleShowFileDetails(filePath?: string): void {
+  sendEvent('command.invoked', { command: 'showFileDetails' });
   const path = filePath || vscode.window.activeTextEditor?.document.fileName;
   if (!path) {
     vscode.window.showInformationMessage('AILINTER — Open a file and save it to see code quality results.');
@@ -344,6 +350,7 @@ function handleFocusIssues(lines: number[]): void {
 }
 
 function handleGetStrategy(args: { smell: string; file: string; line: number }): void {
+  sendEvent('command.invoked', { command: 'getStrategy' });
   const { smell, file, line } = args;
 
   // Try to open the webview panel first; fall back to external URL
@@ -363,6 +370,7 @@ function handleGetStrategy(args: { smell: string; file: string; line: number }):
 }
 
 function handleReplaceSecret(args: { file: string; line: number }): void {
+  sendEvent('command.invoked', { command: 'replaceSecret' });
   const editor = vscode.window.activeTextEditor;
   if (!editor) return;
   const lineIdx = args.line - 1;
@@ -378,6 +386,7 @@ function handleReplaceSecret(args: { file: string; line: number }): void {
 }
 
 function handleSuppressWarning(args: { file: string; line: number; smellType?: string }): void {
+  sendEvent('command.invoked', { command: 'suppressWarning' });
   const editor = vscode.window.activeTextEditor;
   if (!editor) return;
   const lineIdx = args.line - 1;
@@ -391,6 +400,7 @@ function handleSuppressWarning(args: { file: string; line: number; smellType?: s
 }
 
 function handleShowVulnerabilityDetails(args: { file: string; line: number; message: string }): void {
+  sendEvent('command.invoked', { command: 'showVulnerabilityDetails' });
   vscode.window.showWarningMessage(
     `[Vulnerability] ${args.message}`,
     { modal: false, detail: `File: ${args.file}, Line: ${args.line}` }
@@ -398,6 +408,7 @@ function handleShowVulnerabilityDetails(args: { file: string; line: number; mess
 }
 
 async function handleScanFileCommand(): Promise<void> {
+  sendEvent('command.invoked', { command: 'scanFile' });
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showWarningMessage('No active editor to scan.');
@@ -411,6 +422,7 @@ async function handleScanFileCommand(): Promise<void> {
  * Triggered from hover, diagnostics, or command palette.
  */
 function handleOpenDocs(args: { smell: string }): void {
+  sendEvent('command.invoked', { command: 'openDocs' });
   const context = getExtensionContext();
   if (context) {
     webviewPanel.showDocumentation(args.smell, context);
@@ -422,6 +434,7 @@ function handleOpenDocs(args: { smell: string }): void {
  * Triggered from CodeAction "Open Docs Panel" or other entry points.
  */
 function handleOpenRefactoring(args: { smell: string; file: string; line: number }): void {
+  sendEvent('command.invoked', { command: 'openRefactoring' });
   const context = getExtensionContext();
   if (context) {
     webviewPanel.showRefactoring(args.smell, args.file, args.line, context);
@@ -450,6 +463,7 @@ function registerEventHandlers(context: vscode.ExtensionContext): void {
         clearTimeout(timer);
         changeTimers.delete(document.fileName);
       }
+      sendEvent('scan.triggered', { source: 'save' });
       await scanActiveFile(document);
     })
   );
@@ -559,6 +573,7 @@ function scanActiveFileOnActivation(): void {
   const config = vscode.workspace.getConfiguration('ailinter');
   if (!config.get<boolean>('enable', true)) return;
   if (!config.get<boolean>('scanOnOpen', true)) return;
+  sendEvent('scan.triggered', { source: 'open' });
   scanActiveFile(editor.document);
 }
 
@@ -658,6 +673,7 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
 
   // ── 1. Pre-scan: snapshot current score ────────────────────────────────
   const cachedBefore = getCachedResult(filePath);
+  const scanStartTime = Date.now();
   qualityMonitor.snapshotBefore(filePath, cachedBefore?.score);
 
   // ── 2. Update UI — scanning state ──────────────────────────────────────
@@ -674,6 +690,13 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
         scanAndCache(filePath, binaryPath, workspaceRoot)
       )
     );
+
+    // Telemetry: scan completed
+    sendEvent('scan.completed', {
+      language: document.languageId,
+      duration_ms: Date.now() - scanStartTime,
+      file_size_lines: document.lineCount,
+    });
   } catch (err) {
     fileScore = handleScanError(err, filePath, relativePath, document, diagnosticCollection);
   }
@@ -734,6 +757,14 @@ function handleScanError(
 ): FileScore {
   const message = err instanceof Error ? err.message : String(err);
   console.error(`AILINTER scan error: ${message}`);
+
+  // Categorize error for telemetry
+  const errMsg = message.toLowerCase();
+  const errorType = errMsg.includes('timeout') ? 'timeout'
+    : errMsg.includes('enoent') || errMsg.includes('spawn') ? 'binary_error'
+    : errMsg.includes('parse') ? 'parse_error'
+    : 'unknown';
+  sendEvent('scan.failed', { error_type: errorType });
 
   const cached = getCachedResult(filePath);
   if (cached) {

@@ -7,6 +7,7 @@
  */
 import * as vscode from 'vscode';
 import { AilinterFinding } from './types';
+import { sendEvent } from './telemetry';
 
 export class AilinterCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [
@@ -52,6 +53,7 @@ export class AilinterCodeActionProvider implements vscode.CodeActionProvider {
         };
         refactorAction.diagnostics = [toDiagnostic(document, f)];
         refactorAction.isPreferred = true;
+        sendEvent('quickfix.applied', { action: 'getStrategy' });
         actions.push(refactorAction);
       }
 
@@ -68,6 +70,7 @@ export class AilinterCodeActionProvider implements vscode.CodeActionProvider {
         };
         replaceAction.diagnostics = [toDiagnostic(document, f)];
         replaceAction.isPreferred = true;
+        sendEvent('quickfix.applied', { action: 'replaceSecret' });
         actions.push(replaceAction);
       }
 
@@ -83,6 +86,7 @@ export class AilinterCodeActionProvider implements vscode.CodeActionProvider {
           arguments: [{ file: f.file, line: f.line, message: f.message }],
         };
         auditAction.diagnostics = [toDiagnostic(document, f)];
+        sendEvent('quickfix.applied', { action: 'reviewVulnerability' });
         actions.push(auditAction);
       }
 
@@ -97,6 +101,7 @@ export class AilinterCodeActionProvider implements vscode.CodeActionProvider {
         arguments: [{ file: f.file, line: f.line, smellType: f.smellType }],
       };
       suppressAction.diagnostics = [toDiagnostic(document, f)];
+      sendEvent('quickfix.applied', { action: 'suppressWarning' });
       actions.push(suppressAction);
     }
 

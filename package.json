@@ -211,6 +211,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show CodeLens annotations with function-level scores"
+        },
+        "ailinter.telemetry": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send anonymous usage data to help improve AILINTER. No file paths, source code, or personal data is collected. Disable to opt out."
         }
       }
     }
