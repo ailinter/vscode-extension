@@ -1,0 +1,27 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+      - run: npm run compile
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish -p ${{ secrets.VSCE_PAT }}
+      - name: Package for GitHub Release
+        run: npx @vscode/vsce package
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.vsix'
+          generate_release_notes: true
