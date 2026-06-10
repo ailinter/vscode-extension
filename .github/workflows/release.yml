@@ -32,4 +32,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --generate-notes \
             --title "${GITHUB_REF_NAME}" \
-            *.vsix
+            ./*.vsix
