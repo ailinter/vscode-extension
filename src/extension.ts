@@ -7,7 +7,7 @@
  *   - CodeLens (function-level scores with delta)
  *   - Hover (refactoring guidance)
  *   - CodeActions (Quick Fix lightbulb)
- *   - Sidebar (project health tree view)
+ *   - Sidebar (project quality tree view)
  *   - Status bar (score + delta)
  *   - Monitor (git merge-base delta tracking)
  *   - Git poller (periodic git change detection)
@@ -28,12 +28,12 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { scanAndCache, getCachedResult, getAllCachedResults, clearCache } from './ailinter';
-import { AilinterFinding, FileScore, ProjectHealth } from './types';
+import { AilinterFinding, FileScore, ProjectQuality } from './types';
 import { applyDecorations, clearDecorations, disposeDecorations } from './decorations';
 import { AilinterCodeLensProvider } from './codelens';
 import { AilinterHoverProvider } from './hover';
 import { AilinterCodeActionProvider } from './codeactions';
-import { CodeHealthMonitor } from './monitor';
+import { CodeQualityMonitor } from './monitor';
 import { AilinterSidebarProvider } from './sidebar';
 import { updateDiagnostics } from './diagnostics';
 import { AilinterFileDecorationProvider } from './fileDecorations';
@@ -61,7 +61,7 @@ let codeLensRegistration: vscode.Disposable;
 let hoverProvider: AilinterHoverProvider;
 let codeActionProvider: AilinterCodeActionProvider;
 let sidebarProvider: AilinterSidebarProvider;
-let healthMonitor: CodeHealthMonitor;
+let qualityMonitor: CodeQualityMonitor;
 let statusBar: vscode.StatusBarItem;
 let fileDecorationProvider: AilinterFileDecorationProvider;
 let webviewPanel: AilinterWebviewPanel;
@@ -92,8 +92,8 @@ export function activate(context: vscode.ExtensionContext): void {
   setStatusBarIdle();
   context.subscriptions.push(statusBar);
 
-  // Health monitor (git merge-base delta tracking)
-  healthMonitor = new CodeHealthMonitor();
+  // Quality monitor (git merge-base delta tracking)
+  qualityMonitor = new CodeQualityMonitor();
 
   // Webview panel (rich documentation + refactoring)
   webviewPanel = new AilinterWebviewPanel();
@@ -227,7 +227,7 @@ export function deactivate(): void {
   }
   disposeDecorations();
   clearCache();
-  healthMonitor.clear();
+  qualityMonitor.clear();
   webviewPanel.dispose();
 
   // Clear all pending debounce timers
@@ -612,7 +612,7 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
 
   // ── 1. Pre-scan: snapshot current score ────────────────────────────────
   const cachedBefore = getCachedResult(filePath);
-  healthMonitor.snapshotBefore(filePath, cachedBefore?.score);
+  qualityMonitor.snapshotBefore(filePath, cachedBefore?.score);
 
   // ── 2. Update UI — scanning state ──────────────────────────────────────
   setStatusBarScanning(relativePath);
@@ -636,12 +636,12 @@ async function scanActiveFile(document: vscode.TextDocument): Promise<void> {
 
   // ── 4. Compute deltas ──────────────────────────────────────────────────
   // In-memory delta (before/after snapshot)
-  const delta = healthMonitor.snapshotAfter(filePath, fileScore.score);
+  const delta = qualityMonitor.snapshotAfter(filePath, fileScore.score);
 
   // Git merge-base delta (compare vs main branch)
   let gitDelta: number | undefined;
   try {
-    gitDelta = await healthMonitor.computeGitDelta(
+    gitDelta = await qualityMonitor.computeGitDelta(
       filePath,
       fileScore.score,
       binaryPath,
@@ -769,7 +769,7 @@ function updateAllProviders(
   // Status bar — ALWAYS updates
   updateStatusBar(fileScore.score, { delta });
 
-  // Sidebar (project health)
+  // Sidebar (project quality)
   try { updateSidebar(); }
   catch (e) { console.error('[ailinter] sidebar error:', e); }
 
@@ -791,7 +791,7 @@ function updateAllProviders(
 // ── Sidebar update ───────────────────────────────────────────────────────────
 
 /**
- * Recompute project health from the cache and push to the sidebar.
+ * Recompute project quality from the cache and push to the sidebar.
  */
 function updateSidebar(): void {
   const allScores = getAllCachedResults();
@@ -814,7 +814,7 @@ function updateSidebar(): void {
     .slice(0, 10)
     .map(([smell, count]) => ({ smell, count }));
 
-  const health: ProjectHealth = {
+  const quality: ProjectQuality = {
     overallScore: Math.round(
       allScores.reduce((sum, f) => sum + f.score, 0) / allScores.length
     ),
@@ -827,7 +827,7 @@ function updateSidebar(): void {
     topSmells,
   };
 
-  sidebarProvider.update(health, allScores);
+  sidebarProvider.update(quality, allScores);
 }
 
 // ── Delta Dashboard Update (Feature 1) ────────────────────────────────────────

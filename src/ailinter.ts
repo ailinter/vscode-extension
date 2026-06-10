@@ -31,29 +31,42 @@ export function clearCache(): void {
 
 // ── Known smell message matchers ─────────────────────────────────────────────
 const SMELL_MESSAGE_PATTERNS: { pattern: RegExp; smell: string }[] = [
-  { pattern: /deep\s*nest/i, smell: 'deep_nesting' },
-  { pattern: /brain\s*method/i, smell: 'brain_method' },
-  { pattern: /bumpy\s*road/i, smell: 'bumpy_road' },
-  { pattern: /complex\s*condition/i, smell: 'complex_conditional' },
-  { pattern: /god\s*class/i, smell: 'god_class' },
-  { pattern: /long\s*parameter/i, smell: 'long_parameter_list' },
-  { pattern: /primitive\s*obsess/i, smell: 'primitive_obsession' },
+  { pattern: /deep[_\s]*nest/i, smell: 'deep_nesting' },
+  { pattern: /brain[_\s]*method/i, smell: 'brain_method' },
+  { pattern: /bumpy[_\s]*road/i, smell: 'bumpy_road' },
+  { pattern: /complex[_\s]*condition/i, smell: 'complex_conditional' },
+  { pattern: /god[_\s]*class/i, smell: 'god_class' },
+  { pattern: /long[_\s]*parameter/i, smell: 'long_parameter_list' },
+  { pattern: /primitive[_\s]*obsess/i, smell: 'primitive_obsession' },
   { pattern: /duplicat/i, smell: 'duplicated_code' },
-  { pattern: /long\s*method/i, smell: 'long_method' },
-  { pattern: /long\s*file/i, smell: 'long_file' },
-  { pattern: /complex\s*method/i, smell: 'complex_method' },
+  { pattern: /long[_\s]*method/i, smell: 'long_method' },
+  { pattern: /long[_\s]*file/i, smell: 'long_file' },
+  { pattern: /complex[_\s]*method/i, smell: 'complex_method' },
   { pattern: /cyclomatic/i, smell: 'high_cyclomatic_complexity' },
-  { pattern: /data\s*class/i, smell: 'data_class' },
-  { pattern: /refused\s*bequest/i, smell: 'refused_bequest' },
-  { pattern: /shotgun\s*surgery/i, smell: 'shotgun_surgery' },
-  { pattern: /parallel\s*inheritance/i, smell: 'parallel_inheritance' },
-  { pattern: /global\s*data/i, smell: 'global_data' },
-  { pattern: /magic\s*number/i, smell: 'magic_number' },
-  { pattern: /misplaced\s*function/i, smell: 'misplaced_function' },
-  { pattern: /low\s*cohesion/i, smell: 'low_cohesion' },
+  { pattern: /data[_\s]*class/i, smell: 'data_class' },
+  { pattern: /refused[_\s]*bequest/i, smell: 'refused_bequest' },
+  { pattern: /shotgun[_\s]*surgery/i, smell: 'shotgun_surgery' },
+  { pattern: /parallel[_\s]*inheritance/i, smell: 'parallel_inheritance' },
+  { pattern: /global[_\s]*data/i, smell: 'global_data' },
+  { pattern: /magic[_\s]*number/i, smell: 'magic_number' },
+  { pattern: /misplaced[_\s]*function/i, smell: 'misplaced_function' },
+  { pattern: /low[_\s]*cohesion/i, smell: 'low_cohesion' },
 ];
 
 function detectSmellType(message: string): string | undefined {
+  // Pass 1: Try extracting from message prefix (CLI format: "smell_name: details")
+  // e.g., "complex_method: scanDir CC=18" — extract "complex_method" directly
+  const prefixMatch = message.match(/^(\w+):\s/);
+  if (prefixMatch) {
+    const possibleSmell = prefixMatch[1];
+    for (const { smell } of SMELL_MESSAGE_PATTERNS) {
+      if (possibleSmell === smell || possibleSmell === smell.replace(/_/g, ' ')) {
+        return smell;
+      }
+    }
+  }
+
+  // Pass 2: Fall back to pattern matching in the full message
   for (const { pattern, smell } of SMELL_MESSAGE_PATTERNS) {
     if (pattern.test(message)) return smell;
   }

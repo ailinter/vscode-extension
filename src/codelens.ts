@@ -2,6 +2,9 @@
  * CodeLens provider: shows function-level quality scores and per-function
  * issue counts above each function — similar to CodeScene's inline annotations.
  *
+ * Phase 2 enhancement: delta-aware CodeLens now shows ▲/▼ score changes
+ * compared to the git merge-base, alongside the absolute score.
+ *
  * Uses resolveCodeLens for lazy command resolution to avoid VS Code's
  * CommandsConverter cache disposal issue (CS-5276 pattern from CodeScene).
  * Commands with arguments are cached internally by VS Code and disposed when
@@ -18,8 +21,13 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
   private _onDidChangeCodeLenses = new vscode.EventEmitter<void>();
   public readonly onDidChangeCodeLenses = this._onDidChangeCodeLenses.event;
 
-  /** Per-file results: fileName → { score, findings } */
-  private results = new Map<string, { score: number; findings: AilinterFinding[] }>();
+  /** Per-file results: fileName → { score, findings, delta } */
+  private results = new Map<string, {
+    score: number;
+    findings: AilinterFinding[];
+    delta?: number;
+    gitDelta?: number;
+  }>();
 
   /**
    * Metadata for lazy CodeLens resolution.
@@ -39,9 +47,21 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
   /**
    * Called by extension.ts when new scan results arrive.
    * Fires change event so lenses re-render.
+   *
+   * @param filePath Absolute path to the scanned file
+   * @param score Current quality score
+   * @param findings Detected findings
+   * @param delta Optional delta from last snapshot (in-memory before/after)
+   * @param gitDelta Optional git merge-base delta (vs main branch)
    */
-  updateResults(filePath: string, score: number, findings: AilinterFinding[]): void {
-    this.results.set(filePath, { score, findings });
+  updateResults(
+    filePath: string,
+    score: number,
+    findings: AilinterFinding[],
+    delta?: number,
+    gitDelta?: number
+  ): void {
+    this.results.set(filePath, { score, findings, delta, gitDelta });
     this._onDidChangeCodeLenses.fire();
   }
 
@@ -59,7 +79,7 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
     const lenses: vscode.CodeLens[] = [];
 
     // ── 1. File-level score at the very top ────────────────────────────────
-    const scoreLens = buildFileScoreLens(document, fileResult);
+    const scoreLens = buildFileScoreLens(document.fileName, fileResult);
     this.lensMeta.set('__file__', {
       filePath: document.fileName,
       score: fileResult.score,
@@ -101,25 +121,45 @@ export class AilinterCodeLensProvider implements vscode.CodeLensProvider {
   clearMeta(): void {
     this.lensMeta.clear();
   }
+
+  /**
+   * Get the delta for a specific file (used by extension.ts to pass through).
+   */
+  getFileDelta(filePath: string): number | undefined {
+    const r = this.results.get(filePath);
+    return r?.delta;
+  }
+
+  /**
+   * Get the git delta for a specific file.
+   */
+  getFileGitDelta(filePath: string): number | undefined {
+    const r = this.results.get(filePath);
+    return r?.gitDelta;
+  }
 }
 
 // ── Module-level helpers ──────────────────────────────────────────────────────
 
 function buildFileScoreLens(
-  document: vscode.TextDocument,
-  fileResult: { score: number; findings: AilinterFinding[] }
+  filePath: string,
+  fileResult: { score: number; findings: AilinterFinding[]; delta?: number; gitDelta?: number }
 ): vscode.CodeLens {
   const topRange = new vscode.Range(0, 0, 0, 0);
   const findingCount = fileResult.findings.length;
 
   const severityCounts = countFindingsBySeverity(fileResult.findings);
-  const tooltip = `File quality score: ${fileResult.score}/100\n${findingCount} findings (${severityCounts.critical} critical, ${severityCounts.error} errors, ${severityCounts.warning} warnings)`;
+
+  // Only show git merge-base delta in file-level CodeLens (vs main branch).
+  // The in-memory before/after delta defaults to undefined for first scans
+  // and is too noisy for inline display — we show it in status bar instead.
+  const displayDelta = fileResult.gitDelta;
 
   return new vscode.CodeLens(topRange, {
-    title: formatScoreTitle(fileResult.score, findingCount),
-    tooltip,
+    title: formatScoreTitle(fileResult.score, findingCount, displayDelta),
+    tooltip: buildScoreTooltip(fileResult.score, findingCount, severityCounts, displayDelta),
     command: 'ailinter.showFileDetails',
-    arguments: [document.fileName],
+    arguments: [filePath],
   });
 }
 
@@ -140,9 +180,49 @@ function buildClusterLens(
   });
 }
 
-function formatScoreTitle(score: number, findingCount: number): string {
+/**
+ * Format the score title with optional delta indicator.
+ *
+ * Display patterns:
+ *   🟢 AILINTER: 85/100  ▲ +6  — 3 issues   (improvement)
+ *   🔴 AILINTER: 72/100  ▼ -3  — 5 issues   (regression)
+ *   🟢 AILINTER: 85/100  — 3 issues          (no delta)
+ */
+function formatScoreTitle(score: number, findingCount: number, delta?: number): string {
   const scoreColor = score >= 80 ? '🟢' : score >= 60 ? '🟡' : '🔴';
-  return `${scoreColor} AILINTER: ${score}/100  —  ${findingCount} issue${findingCount !== 1 ? 's' : ''}`;
+  const deltaStr = buildDeltaString(delta);
+  return `${scoreColor} AILINTER: ${score}/100${deltaStr} — ${findingCount} issue${findingCount !== 1 ? 's' : ''}`;
+}
+
+/**
+ * Build the tooltip with severity breakdown and delta info.
+ */
+function buildScoreTooltip(
+  score: number,
+  findingCount: number,
+  severityCounts: { critical: number; error: number; warning: number },
+  delta?: number
+): string {
+  let tip = `File quality score: ${score}/100\n`;
+  tip += `${findingCount} findings (${severityCounts.critical} critical, ${severityCounts.error} errors, ${severityCounts.warning} warnings)`;
+
+  if (delta !== undefined) {
+    if (delta > 0) {
+      tip += `\n\n🟢 Improved by ${delta} points since last scan`;
+    } else if (delta < 0) {
+      tip += `\n\n🔴 Regressed by ${Math.abs(delta)} points since last scan`;
+    }
+  }
+
+  return tip;
+}
+
+/**
+ * Build a delta string for display, e.g. "  ▲ +6" or "  ▼ -3".
+ */
+function buildDeltaString(delta?: number): string {
+  if (delta === undefined || delta === 0) return '';
+  return delta > 0 ? `  ▲ +${delta}` : `  ▼ ${delta}`;
 }
 
 function countFindingsBySeverity(findings: AilinterFinding[]): { critical: number; error: number; warning: number } {

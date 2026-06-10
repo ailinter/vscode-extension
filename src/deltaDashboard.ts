@@ -1,6 +1,6 @@
 /**
  * Delta Dashboard — sidebar webview showing all scanned files with
- * quality score deltas. Like `git status` for code health.
+ * quality score deltas. Like `git status` for code quality.
  *
  * Features:
  *  - Sort by worst delta first, then worst score
@@ -108,7 +108,7 @@ export class DeltaDashboardProvider implements vscode.WebviewViewProvider {
   .header { padding:10px 8px 6px; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--vscode-descriptionForeground); border-bottom:1px solid var(--vscode-panel-border); }
   .summary { padding:8px 8px; font-size:11px; color:var(--vscode-descriptionForeground); border-bottom:1px solid var(--vscode-panel-border); }
 </style></head><body>
-  <div class="header">$(shield) Code Health Delta</div>
+  <div class="header">$(shield) Code Quality Delta</div>
   <div class="summary">${this._scores.length} files scanned</div>
   <table>
     <thead><tr>

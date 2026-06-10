@@ -1,13 +1,15 @@
 /**
  * Status bar item: shows current file score with delta tracking.
- * Enhanced from MVP: now includes before/after delta, issue count,
- * and click commands for detailed view.
+ * Minimal display: icon + score, colored by tier.
+ * State-dependent click actions.
  *
  * Display patterns:
- *   $(shield) AILINTER: 85/100  ▲ +6  — 3 issues          (improved)
- *   $(shield) AILINTER: 72/100  ▼ -3  — 5 issues          (regressed)
- *   $(shield) AILINTER: 85/100  — 3 issues                 (unchanged)
- *   $(shield) AILINTER: ready — save to scan               (no data)
+ *   $(shield) 85/100                        (score, colored)
+ *   $(shield) 85/100  ▲ +6                  (improved)
+ *   $(shield) AILINTER                      (idle)
+ *   $(sync~spin) scanning                   (scanning)
+ *   $(error) scan failed                    (error)
+ *   $(shield) 85/100 ⚠️                     (stale)
  */
 import * as vscode from 'vscode';
 
@@ -15,73 +17,47 @@ let statusBarItem: vscode.StatusBarItem | undefined;
 
 export function createStatusBar(): vscode.StatusBarItem {
   statusBarItem = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Right,
-    100
+    vscode.StatusBarAlignment.Left,
+    0
   );
-  statusBarItem.command = 'ailinter.showFileDetails';
   return statusBarItem;
+}
+
+function scoreColor(score: number): vscode.ThemeColor | undefined {
+  if (score >= 80) return new vscode.ThemeColor('terminal.ansiGreen');
+  if (score >= 60) return new vscode.ThemeColor('terminal.ansiYellow');
+  return new vscode.ThemeColor('terminal.ansiRed');
 }
 
 /**
  * Update the status bar with the latest scan results.
  *
  * @param score Current file quality score (0-100)
- * @param options Optional metadata for richer display
+ * @param options Optional delta for richer display
  */
 export function updateStatusBar(
   score: number,
-  options?: {
-    delta?: number;
-    findingCount?: number;
-    fileName?: string;
-  }
+  options?: { delta?: number }
 ): void {
   if (!statusBarItem) return;
 
   const deltaStr = buildDeltaString(options?.delta);
-  const issueStr = buildIssueString(options?.findingCount);
+  statusBarItem.text = `$(shield) ${score}/100${deltaStr}`;
+  statusBarItem.color = scoreColor(score);
 
-  statusBarItem.text = `$(shield) AILINTER: ${score}/100${deltaStr}${issueStr}`;
-
-  statusBarItem.backgroundColor = undefined;
-  statusBarItem.color = colorForScore(score);
-
-  statusBarItem.tooltip = buildTooltip(score, options);
-  statusBarItem.show();
-}
-
-function colorForScore(score: number): string | undefined {
-  if (score >= 80) return '#3fb950';  // green
-  if (score >= 60) return '#d29922';  // yellow
-  return '#f85149';                    // red
-}
-
-function buildIssueString(findingCount?: number): string {
-  if (findingCount === undefined) return '';
-  return ` — ${findingCount} issue${findingCount !== 1 ? 's' : ''}`;
-}
-
-function buildTooltip(score: number, options?: {
-  delta?: number;
-  findingCount?: number;
-  fileName?: string;
-}): string {
-  const parts: string[] = [`Code Quality: ${score}/100`];
-  if (options?.delta !== undefined) {
+  // Tooltip shows score and delta
+  const parts = [`Code Quality: ${score}/100`];
+  if (options?.delta) {
     parts.push(
-      options.delta >= 0
-        ? `Improved by ${options.delta} points`
-        : `Regressed by ${Math.abs(options.delta)} points`
+      options.delta > 0
+        ? `Improved by ${options.delta}`
+        : `Regressed by ${Math.abs(options.delta)}`
     );
   }
-  if (options?.findingCount !== undefined) {
-    parts.push(`${options.findingCount} issues found`);
-  }
-  if (options?.fileName) {
-    parts.push(`File: ${vscode.workspace.asRelativePath(options.fileName)}`);
-  }
-  parts.push('Click for details');
-  return parts.join(' · ');
+  statusBarItem.tooltip = parts.join(' · ') + ' · Click for details';
+
+  statusBarItem.command = 'ailinter.showFileDetails';
+  statusBarItem.show();
 }
 
 /**
@@ -93,6 +69,7 @@ export function setStatusBarIdle(): void {
   statusBarItem.color = undefined;
   statusBarItem.backgroundColor = undefined;
   statusBarItem.tooltip = 'AILINTER — save a file to scan';
+  statusBarItem.command = 'ailinter.showFileDetails';
   statusBarItem.show();
 }
 
@@ -101,11 +78,11 @@ export function setStatusBarIdle(): void {
  */
 export function setStatusBarScanning(fileName?: string): void {
   if (!statusBarItem) return;
-  const fileLabel = fileName
-    ? ` — ${vscode.workspace.asRelativePath(fileName)}`
-    : '';
-  statusBarItem.text = `$(sync~spin) AILINTER scanning${fileLabel}`;
-  statusBarItem.tooltip = 'AILINTER is scanning...';
+  statusBarItem.text = `$(sync~spin) scanning`;
+  statusBarItem.tooltip = fileName
+    ? `Scanning ${vscode.workspace.asRelativePath(fileName)}...`
+    : 'AILINTER is scanning...';
+  statusBarItem.command = undefined; // no action during scan
   statusBarItem.show();
 }
 
@@ -114,9 +91,11 @@ export function setStatusBarScanning(fileName?: string): void {
  */
 export function setStatusBarError(message: string): void {
   if (!statusBarItem) return;
-  statusBarItem.text = `$(error) AILINTER: Error`;
-  statusBarItem.tooltip = `Error: ${message}`;
-  statusBarItem.color = '#f85149';
+  statusBarItem.text = `$(error) scan failed`;
+  statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+  statusBarItem.color = undefined;
+  statusBarItem.tooltip = `Error: ${message} — Click to retry`;
+  statusBarItem.command = 'ailinter.scanFile'; // retry on click
   statusBarItem.show();
 }
 
@@ -126,12 +105,8 @@ export function setStatusBarError(message: string): void {
  */
 export function setStatusBarStale(): void {
   if (!statusBarItem) return;
-  // Remove any existing stale marker first, then append fresh one
-  statusBarItem.text = statusBarItem.text.replace(' ⚠️', '') + ' ⚠️';
-  const existing = (statusBarItem.tooltip as string) || '';
-  if (!existing.includes('(stale)')) {
-    statusBarItem.tooltip = existing + ' (stale — showing last successful scan)';
-  }
+  statusBarItem.text = statusBarItem.text + ' ⚠️';
+  statusBarItem.tooltip = (statusBarItem.tooltip as string || '') + ' (stale)';
 }
 
 /**

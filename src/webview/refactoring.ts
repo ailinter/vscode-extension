@@ -1,134 +1,109 @@
 /**
  * Webview refactoring suggestion HTML — displays actionable refactoring
- * guidance with Apply/Copy/Reject buttons.
+ * guidance fetched from the ailinter CLI.
  *
- * Uses @vscode/webview-ui-toolkit components for VS Code-native UI
- * (Feature 5: @vscode/elements).
+ * Fetches real refactoring strategy data from the ailinter CLI
+ * (get-refactoring-strategy command) instead of using hardcoded examples.
  *
  * Inspired by CodeScene's refactoring-components.ts and the refactoring
  * presentation pattern in CodeSceneTabPanel.
  */
 
+import * as cp from 'child_process';
 import * as vscode from 'vscode';
-import { getStyles } from './content';
+import { promisify } from 'util';
+
+const execAsync = promisify(cp.exec);
 
 /**
- * Get the webview URI for the toolkit module.
+ * Fetch real refactoring strategy from the ailinter CLI.
+ * Calls `ailinter get-refactoring-strategy <smell_type>` which returns
+ * markdown with step-by-step instructions, before/after Go code examples,
+ * and verification checklists.
+ *
+ * Falls back to a descriptive error message if the binary isn't available
+ * or the smell type isn't found.
+ *
+ * @param smellType The code smell type (e.g., "deep_nesting", "bumpy_road")
+ * @param binaryPath Path to the ailinter binary (default: "ailinter")
+ * @returns Markdown string with the refactoring strategy
  */
-function getToolkitUri(webview: vscode.Webview, extensionUri: vscode.Uri): string {
-  const toolkitUri = vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode', 'webview-ui-toolkit', 'dist', 'toolkit.js');
-  return webview.asWebviewUri(toolkitUri).toString();
+export async function getRefactoringStrategy(
+  smellType: string,
+  binaryPath: string = 'ailinter'
+): Promise<string> {
+  try {
+    const { stdout } = await execAsync(
+      `${binaryPath} get-refactoring-strategy ${smellType}`,
+      {
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      }
+    );
+    return stdout;
+  } catch (err: any) {
+    return `# ${formatSmellName(smellType)}\n\nUnable to fetch refactoring strategy: ${err.message || 'Unknown error'}\n\nMake sure the ailinter binary is installed and up to date (≥ v0.9.0).`;
+  }
 }
 
 /**
- * Build the full HTML for the refactoring suggestion page.
+ * Build the full HTML for the refactoring strategy page, showing real
+ * before/after code examples fetched from the ailinter CLI.
  *
- * @param smellType The code smell type
- * @param filePath Absolute path to the file
- * @param line Line number of the issue
- * @param webview The webview instance
- * @param extensionUri The extension URI
+ * @param smellType The code smell type (e.g., "deep_nesting")
+ * @param strategyOutput Raw markdown output from `ailinter get-refactoring-strategy`
+ * @param filePath Optional absolute path to the file being refactored
+ * @param line Optional line number of the issue
  * @returns Complete HTML document string
  */
 export function buildRefactoringHtml(
   smellType: string,
-  filePath: string,
-  line: number,
-  webview: vscode.Webview,
-  extensionUri: vscode.Uri
+  strategyOutput: string,
+  filePath?: string,
+  line?: number
 ): string {
   const smellName = formatSmellName(smellType);
-  const relativePath = getRelativePath(filePath);
-  const toolkitSrc = getToolkitUri(webview, extensionUri);
+  const locationHtml = filePath
+    ? `<p class="file-location">📄 ${escapeHtml(getRelativePath(filePath))}${line ? `:${line}` : ''}</p>`
+    : '';
+  const html = markdownToHtml(strategyOutput);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval' https:; font-src 'self' https:;">
-  <script type="module" src="${toolkitSrc}"></script>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https:; script-src 'unsafe-inline' 'unsafe-eval' https:; font-src 'self' https:;">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css" integrity="sha384-BE+nmfgoK1j3fBxbLI64Jzf52Mx/QAyw+4O7GyPYevJnAyrljCoRtQkYNfCfuWPF" crossorigin="anonymous">
   <style>
-    ${getStyles()}
-    ${getRefactoringStyles()}
+    body { padding: 24px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 14px); color: var(--vscode-foreground); background: var(--vscode-editor-background); line-height: 1.6; max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 1.4em; font-weight: 600; color: var(--vscode-textLink-foreground); margin-bottom: 12px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 12px; }
+    h2 { font-size: 1.15em; margin-top: 24px; margin-bottom: 8px; color: var(--vscode-sideBarTitle-foreground); font-weight: 600; }
+    h3 { font-size: 1.05em; margin-top: 20px; margin-bottom: 6px; font-weight: 600; }
+    p { margin-bottom: 12px; }
+    pre { background: var(--vscode-textCodeBlock-background); padding: 16px; border-radius: 6px; overflow-x: auto; font-family: var(--vscode-editor-font-family); font-size: 13px; line-height: 1.5; border: 1px solid var(--vscode-panel-border); }
+    code { font-family: var(--vscode-editor-font-family); }
+    :not(pre) > code { background: var(--vscode-textCodeBlock-background); padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+    ul, ol { margin-bottom: 12px; padding-left: 24px; }
+    li { margin-bottom: 4px; }
+    strong { font-weight: 600; }
+    .file-location { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-bottom: 16px; }
+    #stale-warning { display: none; padding: 8px; background: var(--vscode-inputValidation-warningBackground); margin-top: 12px; border-radius: 4px; font-size: 0.9em; }
   </style>
 </head>
 <body>
-  <header class="header">
-    <h1>🔧 Refactoring: ${smellName}</h1>
-    <p class="file-location">
-      <span class="codicon codicon-file"></span>
-      ${escapeHtml(relativePath)}:${line}
-    </p>
-  </header>
-
-  <vscode-panels>
-    <vscode-panel-tab id="tab-strategy">📋 Suggested Approach</vscode-panel-tab>
-    <vscode-panel-tab id="tab-examples">🔄 Before / After</vscode-panel-tab>
-
-    <vscode-panel-view id="view-strategy">
-      <section class="section">
-        <div class="strategy-steps">
-          ${getRefactoringSteps(smellType)}
-        </div>
-      </section>
-    </vscode-panel-view>
-
-    <vscode-panel-view id="view-examples">
-      <section class="section">
-        <div class="code-block">
-          <div class="code-header">❌ Before</div>
-          <pre><code>${escapeHtml(getBeforeExample(smellType))}</code></pre>
-        </div>
-        <div class="code-block">
-          <div class="code-header code-header-good">✅ After</div>
-          <pre><code>${escapeHtml(getAfterExample(smellType))}</code></pre>
-        </div>
-      </section>
-    </vscode-panel-view>
-  </vscode-panels>
-
-  <div id="stale-warning" style="display:none;padding:8px;background:var(--vscode-inputValidation-warningBackground);margin-top:12px;border-radius:4px"></div>
-
-  <section class="section actions" style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
-    <vscode-button appearance="primary" onclick="getStrategy()">
-      🔧 Get Full Strategy
-    </vscode-button>
-    <div style="display:flex;gap:8px;">
-      <vscode-button appearance="secondary" onclick="copyCode()">
-        📋 Copy Example
-      </vscode-button>
-      <vscode-button appearance="secondary" onclick="closePanel()">
-        ✕ Close
-      </vscode-button>
-    </div>
-  </section>
-
-  <footer class="footer">
-    <p>Refactoring suggestions are guidelines — apply with judgement for your specific context.</p>
-  </footer>
-
+  <h1>🔧 ${smellName}</h1>
+  ${locationHtml}
+  <div id="content">
+    ${html}
+  </div>
+  <div id="stale-warning"></div>
   <script>
+    const acquireVsCodeApi = (function() {
+      let api;
+      return function() { if (!api) api = (typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : { postMessage: function() {} }); return api; };
+    })();
     const vscode = acquireVsCodeApi();
-    function getStrategy() {
-      vscode.postMessage({
-        type: 'getStrategy',
-        smell: '${smellType}',
-        filePath: '${escapeHtml(filePath)}',
-        line: ${line}
-      });
-    }
-    function copyCode() {
-      vscode.postMessage({
-        type: 'copyCode',
-        code: \`${escapeHtml(getAfterExample(smellType)).replace(/`/g, '\\`')}\`
-      });
-    }
-    function closePanel() {
-      vscode.postMessage({ type: 'close' });
-    }
-
-    // Listen for staleness warnings from the extension (Feature 4)
     window.addEventListener('message', (e) => {
       if (e.data.type === 'stale') {
         const warning = document.getElementById('stale-warning');
@@ -139,247 +114,157 @@ export function buildRefactoringHtml(
       }
     });
   </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp" crossorigin="anonymous"></script>
+  <script>hljs.highlightAll();</script>
 </body>
 </html>`;
 }
 
 /**
- * Get the refactoring steps HTML for a given smell type.
+ * Simple markdown-to-HTML converter for VS Code webview display.
+ * Handles the format produced by `ailinter get-refactoring-strategy`:
+ * - Code blocks (```go ... ```)
+ * - Headers (# to ###)
+ * - Bold (**text**)
+ * - Italic (*text*)
+ * - Inline code (`code`)
+ * - Unordered and ordered lists
+ * - Paragraphs
  */
-function getRefactoringSteps(smellType: string): string {
-  const steps: Record<string, string[]> = {
-    deep_nesting: [
-      'Use Early Returns / Guard Clauses — exit early when preconditions aren\'t met, rather than wrapping everything in if-blocks.',
-      'Extract Nested Condition Bodies — pull deeply nested code into separate well-named functions.',
-      'Use continue/break in Loops — flatten loop bodies by skipping iterations early with continue rather than nesting.',
-      'Combine Conditions — merge related conditions with && / || where the combined expression is still readable.',
-      'Consider extracting the entire nested block into its own function if it represents a distinct operation.',
-    ],
-    brain_method: [
-      'Identify distinct responsibilities — highlight groups of related code that could form separate functions.',
-      'Extract Method for each responsibility, naming the new function after what it does.',
-      'Replace temporary variables with function calls to make data flow explicit.',
-      'Break down complex conditionals into boolean-returning helper functions.',
-      'Verify: each extracted function should do ONE thing and be testable independently.',
-    ],
-    complex_conditional: [
-      'Extract each sub-condition into a well-named boolean variable or helper function.',
-      'Combine related conditions using descriptive names (e.g., isEligibleForDiscount).',
-      'Consider using a switch/table-driven approach for complex multi-way conditions.',
-      'Move business-rule conditions into the domain model (e.g., user.canAccess()).',
-    ],
-    god_class: [
-      'Identify distinct responsibilities — list every distinct operation the class performs.',
-      'Apply Extract Class for each cohesive group of methods and fields.',
-      'Use the Facade pattern if the class delegates to extracted classes while maintaining the API.',
-      'Extract interfaces for the new classes to enable testing and substitution.',
-    ],
-    long_parameter_list: [
-      'Introduce Parameter Object — group related parameters into a single object/struct.',
-      'Identify parameters that can be derived from others and remove them.',
-      'Consider splitting the function if parameters represent different responsibilities.',
-      'Use builder pattern for optional parameters.',
-    ],
-    duplicated_code: [
-      'Identify the common pattern — what varies between the duplicates?',
-      'Extract the common code into a shared function with parameters for what varies.',
-      'If the duplication is structural (similar classes), consider Template Method pattern.',
-      'For near-identical code with minor differences, add a parameter for the varying part.',
-    ],
-  };
+function markdownToHtml(md: string): string {
+  let html = md;
 
-  const defaultSteps = [
-    'Review the specific code smell and identify the root cause.',
-    'Break down the affected code into smaller, focused units.',
-    'Apply the appropriate refactoring technique (Extract Method, Rename, etc.).',
-    'Verify the refactored code still produces the same output.',
-    'Run tests to ensure no regressions were introduced.',
-  ];
+  // Code blocks (handle before inline code to avoid conflicts)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const escaped = escapeHtml(code);
+    const langClass = lang ? ` class="language-${lang}"` : '';
+    return `<pre><code${langClass}>${escaped}</code></pre>`;
+  });
 
-  const stepsForSmell = steps[smellType] || defaultSteps;
-  return stepsForSmell.map((step, i) =>
-    `<div class="step">
-      <span class="step-number">${i + 1}</span>
-      <span class="step-text">${step}</span>
-    </div>`
-  ).join('\n');
-}
+  // Headers (must come before bold/italic to avoid ## being treated as bold)
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
 
-/**
- * Get the "before" example for display in the refactoring panel.
- */
-function getBeforeExample(smellType: string): string {
-  const before = _getBeforeExample(smellType);
-  return before;
-}
+  // Bold and italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
-/**
- * Get the "after" example for display in the refactoring panel.
- */
-function getAfterExample(smellType: string): string {
-  const after = _getAfterExample(smellType);
-  return after;
-}
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-/**
- * Get refactoring-specific styles.
- */
-function getRefactoringStyles(): string {
-  return `
-    .file-location {
-      font-size: 13px;
-      color: var(--vscode-descriptionForeground, #888);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-top: 4px;
+  // Unordered lists
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+  // Ordered lists
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)(?=\n|$)/g, (match) => {
+    if (match.includes('<ul>')) return match; // already wrapped
+    return '<ol>' + match + '</ol>';
+  });
+
+  // Checklist items
+  html = html.replace(/^- \[ \] (.+)$/gm, '<li class="checklist unchecked">⬜ $1</li>');
+  html = html.replace(/^- \[x\] (.+)$/gm, '<li class="checklist checked">✅ $1</li>');
+
+  // Horizontal rules
+  html = html.replace(/^---$/gm, '<hr>');
+
+  // Paragraphs: wrap consecutive non-empty text blocks
+  const lines = html.split('\n');
+  const result: string[] = [];
+  let inPre = false;
+  let inList = false;
+  let inLi = false;
+  let inHeader = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('<pre>')) {
+      inPre = true;
+      result.push(line);
+      continue;
     }
-    .strategy-steps {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+    if (inPre) {
+      result.push(line);
+      if (trimmed.endsWith('</pre>')) inPre = false;
+      continue;
     }
-    .step {
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-      padding: 8px 12px;
-      background: var(--vscode-textCodeBlock-background, #2d2d2d);
-      border-radius: 6px;
-      border-left: 3px solid var(--vscode-textLink-foreground, #4da6ff);
-    }
-    .step-number {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      background: var(--vscode-button-background, #0078d4);
-      color: var(--vscode-button-foreground, #fff);
-      font-size: 12px;
-      font-weight: 600;
-      flex-shrink: 0;
-    }
-    .step-text {
-      line-height: 1.5;
-      font-size: 13px;
-    }
-    .btn-danger {
-      background: #f85149;
-      color: #fff;
-    }
-    .btn-danger:hover { background: #da3633; }
-  `;
-}
 
-/**
- * Get the "before" code examples (shared with content.ts).
- */
-function _getBeforeExample(smellType: string): string {
-  const examples: Record<string, string> = {
-    deep_nesting:
-      'function process(data) {\n' +
-      '  if (data) {\n' +
-      '    if (data.items) {\n' +
-      '      for (const item of data.items) {\n' +
-      '        if (item.active) {\n' +
-      '          if (item.value > 0) {\n' +
-      '            console.log(item.value);\n' +
-      '          }\n' +
-      '        }\n' +
-      '      }\n' +
-      '    }\n' +
-      '  }\n' +
-      '}',
-    brain_method:
-      'function processOrder(order) {\n' +
-      '  // 200+ lines mixing validation, pricing,\n' +
-      '  // inventory, shipping, notifications...\n' +
-      '  if (!order) throw new Error("missing");\n' +
-      '  // ...\n' +
-      '}',
-    complex_conditional:
-      'if ((user.isActive || user.isTrial) &&\n' +
-      '    !user.isBanned &&\n' +
-      '    (subscription.isValid ||\n' +
-      '     (promotion.active &&\n' +
-      '      promotion.daysLeft > 0))) {\n' +
-      '  grantAccess();\n' +
-      '}',
-    god_class:
-      'class OrderManager {\n' +
-      '  validate() { /* 50 lines */ }\n' +
-      '  calculatePrice() { /* 40 lines */ }\n' +
-      '  applyDiscount() { /* 30 lines */ }\n' +
-      '  checkInventory() { /* 40 lines */ }\n' +
-      '  ship() { /* 50 lines */ }\n' +
-      '  sendEmail() { /* 30 lines */ }\n' +
-      '  generateInvoice() { /* 40 lines */ }\n' +
-      '  // ... 10 more methods\n' +
-      '}',
-    long_parameter_list:
-      'function createUser(\n' +
-      '  name: string,\n' +
-      '  email: string,\n' +
-      '  role: string,\n' +
-      '  department: string,\n' +
-      '  managerId: number,\n' +
-      '  startDate: Date,\n' +
-      '  salary: number,\n' +
-      '  isContractor: boolean\n' +
-      ') { /* ... */ }',
-    default:
-      '// Code smell detected — run refactoring strategy for guidance',
-  };
-  return examples[smellType] || examples.default!;
-}
+    // Track list state
+    if (trimmed.startsWith('<ul>') || trimmed.startsWith('<ol>')) {
+      inList = true;
+      result.push(line);
+      continue;
+    }
+    if (trimmed.startsWith('</ul>') || trimmed.startsWith('</ol>')) {
+      inList = false;
+      result.push(line);
+      continue;
+    }
+    if (trimmed.startsWith('<li')) {
+      inLi = true;
+      result.push(line);
+      continue;
+    }
+    if (trimmed.startsWith('</li>')) {
+      inLi = false;
+      result.push(line);
+      continue;
+    }
+    if (inList || inLi) {
+      result.push(line);
+      continue;
+    }
+    if (trimmed.startsWith('<h') && (trimmed.endsWith('</h1>') || trimmed.endsWith('</h2>') || trimmed.endsWith('</h3>'))) {
+      inHeader = true;
+      result.push(line);
+      continue;
+    }
+    if (inHeader) {
+      result.push(line);
+      inHeader = false;
+      continue;
+    }
+    if (trimmed.startsWith('<hr>')) {
+      result.push(line);
+      continue;
+    }
 
-/**
- * Get the "after" code examples (shared with content.ts).
- */
-function _getAfterExample(smellType: string): string {
-  const examples: Record<string, string> = {
-    deep_nesting:
-      'function process(data) {\n' +
-      '  if (!data?.items) return;\n' +
-      '  for (const item of data.items) {\n' +
-      '    if (!item.active || item.value <= 0) continue;\n' +
-      '    console.log(item.value);\n' +
-      '  }\n' +
-      '}',
-    brain_method:
-      'function processOrder(order) {\n' +
-      '  validateOrder(order);\n' +
-      '  const pricing = calculatePricing(order);\n' +
-      '  const inventory = checkInventory(order);\n' +
-      '  const shipment = arrangeShipping(pricing, inventory);\n' +
-      '  notifyCustomer(order, shipment);\n' +
-      '}',
-    complex_conditional:
-      'const canAccess = isActiveUser(user) || isTrialUser(user);\n' +
-      'const notBanned = !user.isBanned;\n' +
-      'const hasValidSubscription = subscription.isValid || hasActivePromotion(promotion);\n' +
-      'if (canAccess && notBanned && hasValidSubscription) {\n' +
-      '  grantAccess();\n' +
-      '}',
-    god_class:
-      'class OrderValidator { validate() { /* ... */ } }\n' +
-      'class PricingCalculator { calculate() { /* ... */ } }\n' +
-      'class ShippingService { arrange() { /* ... */ } }\n' +
-      'class NotificationService { send() { /* ... */ } }',
-    long_parameter_list:
-      'interface CreateUserParams {\n' +
-      '  name: string; email: string; role: string;\n' +
-      '  department: string; managerId: number;\n' +
-      '  startDate: Date; salary: number;\n' +
-      '  isContractor: boolean;\n' +
-      '}\n' +
-      'function createUser(params: CreateUserParams) { /* ... */ }',
-    default:
-      '// After refactoring — cleaner, more maintainable',
-  };
-  return examples[smellType] || examples.default!;
+    // Empty line = paragraph break
+    if (trimmed === '') {
+      result.push('</p><p>');
+      continue;
+    }
+
+    // Regular text
+    result.push(line);
+  }
+
+  html = result.join('\n');
+
+  // Wrap in paragraphs if not already wrapped
+  if (!html.startsWith('<')) {
+    html = '<p>' + html + '</p>';
+  }
+
+  // Clean up empty paragraphs and structural issues
+  html = html.replace(/<p>\s*<\/p>/g, '');
+  html = html.replace(/<p><h/g, '<h');
+  html = html.replace(/<\/h([123])><\/p>/g, '</h$1>');
+  html = html.replace(/<p><ul>/g, '<ul>');
+  html = html.replace(/<\/ul><\/p>/g, '</ul>');
+  html = html.replace(/<p><ol>/g, '<ol>');
+  html = html.replace(/<\/ol><\/p>/g, '</ol>');
+  html = html.replace(/<p><li/g, '<li');
+  html = html.replace(/<\/li><\/p>/g, '</li>');
+  html = html.replace(/<p><hr>/g, '<hr>');
+  html = html.replace(/<\/p><p><\/p>/g, '</p>');
+  html = html.replace(/<p><\/p>/g, '');
+
+  return html;
 }
 
 /**

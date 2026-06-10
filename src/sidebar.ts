@@ -1,10 +1,10 @@
 /**
- * Sidebar Tree View: project health overview, hotspots, and smell breakdown.
+ * Sidebar Tree View: project quality overview, hotspots, and smell breakdown.
  * Mirrors CodeScene's project-level analysis in a tree view.
  *
  * Structure:
  *   AILINTER
- *   ├─ 🟢 Overall Health: 85/100
+ *   ├─ 🟢 Overall Quality: 85/100
  *   ├─ 3/10 files with issues
  *   ├─ 🔥 Hotspots (expanded)
  *   │   ├─ 🔴 src/bad.go — 42/100 (12 issues)
@@ -15,7 +15,7 @@
  *       └─ god_class — 1 occurrence
  */
 import * as vscode from 'vscode';
-import { AilinterFinding, FileScore, ProjectHealth } from './types';
+import { AilinterFinding, FileScore, ProjectQuality } from './types';
 
 // ── Tree item types ──────────────────────────────────────────────────────────
 
@@ -67,22 +67,22 @@ export class AilinterSidebarProvider implements vscode.TreeDataProvider<Ailinter
   private _onDidChangeTreeData = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  private projectHealth?: ProjectHealth;
+  private projectQuality?: ProjectQuality;
   private fileScores: FileScore[] = [];
 
   /**
    * Update the sidebar with fresh data from the latest scan.
    * Calls refresh so the tree re-renders.
    */
-  update(health: ProjectHealth, scores: FileScore[]): void {
-    this.projectHealth = health;
+  update(quality: ProjectQuality, scores: FileScore[]): void {
+    this.projectQuality = quality;
     this.fileScores = scores;
     this._onDidChangeTreeData.fire();
   }
 
   /** Clear all data */
   clear(): void {
-    this.projectHealth = undefined;
+    this.projectQuality = undefined;
     this.fileScores = [];
     this._onDidChangeTreeData.fire();
   }
@@ -111,28 +111,28 @@ export class AilinterSidebarProvider implements vscode.TreeDataProvider<Ailinter
   private getRootItems(): AilinterTreeItem[] {
     const items: AilinterTreeItem[] = [];
 
-    if (this.projectHealth) {
+    if (this.projectQuality) {
       const scoreIcon =
-        this.projectHealth.overallScore >= 80
+        this.projectQuality.overallScore >= 80
           ? '🟢'
-          : this.projectHealth.overallScore >= 60
+          : this.projectQuality.overallScore >= 60
             ? '🟡'
             : '🔴';
 
-      // Overall health
+      // Overall quality
       items.push(
         new AilinterTreeItem(
-          `${scoreIcon} Overall Health: ${this.projectHealth.overallScore}/100`,
+          `${scoreIcon} Overall Quality: ${this.projectQuality.overallScore}/100`,
           vscode.TreeItemCollapsibleState.None,
           'overview',
-          { score: this.projectHealth.overallScore }
+          { score: this.projectQuality.overallScore }
         )
       );
 
       // Summary line
       items.push(
         new AilinterTreeItem(
-          `${this.projectHealth.filesWithIssues}/${this.projectHealth.fileCount} files with issues — ${this.projectHealth.totalFindings} total findings`,
+          `${this.projectQuality.filesWithIssues}/${this.projectQuality.fileCount} files with issues — ${this.projectQuality.totalFindings} total findings`,
           vscode.TreeItemCollapsibleState.None,
           'overview'
         )
@@ -142,7 +142,7 @@ export class AilinterSidebarProvider implements vscode.TreeDataProvider<Ailinter
       items.push(
         new AilinterTreeItem(
           '🔥 Hotspots',
-          this.projectHealth.filesWithIssues > 0
+          this.projectQuality.filesWithIssues > 0
             ? vscode.TreeItemCollapsibleState.Expanded
             : vscode.TreeItemCollapsibleState.Collapsed,
           'hotspots_category'
@@ -153,7 +153,7 @@ export class AilinterSidebarProvider implements vscode.TreeDataProvider<Ailinter
       items.push(
         new AilinterTreeItem(
           '👃 Top Code Smells',
-          this.projectHealth.topSmells.length > 0
+          this.projectQuality.topSmells.length > 0
             ? vscode.TreeItemCollapsibleState.Collapsed
             : vscode.TreeItemCollapsibleState.None,
           'smells_category'
@@ -199,11 +199,11 @@ export class AilinterSidebarProvider implements vscode.TreeDataProvider<Ailinter
   // ── Top code smells ─────────────────────────────────────────────────────
 
   private getSmellItems(): AilinterTreeItem[] {
-    if (!this.projectHealth || this.projectHealth.topSmells.length === 0) {
+    if (!this.projectQuality || this.projectQuality.topSmells.length === 0) {
       return [new AilinterTreeItem('No smells detected', vscode.TreeItemCollapsibleState.None, 'overview')];
     }
 
-    return this.projectHealth.topSmells.slice(0, 15).map(s => {
+    return this.projectQuality.topSmells.slice(0, 15).map(s => {
       const icon = s.count >= 5 ? '🔴' : s.count >= 3 ? '🟡' : '🟢';
       return new AilinterTreeItem(
         `${icon} ${s.smell} — ${s.count} occurrence${s.count !== 1 ? 's' : ''}`,

@@ -16,7 +16,7 @@
 import * as vscode from 'vscode';
 import { KNOWN_SMELLS } from '../types';
 import { buildDocHtml } from './content';
-import { buildRefactoringHtml } from './refactoring';
+import { buildRefactoringHtml, getRefactoringStrategy } from './refactoring';
 
 export class AilinterWebviewPanel {
   private panel: vscode.WebviewPanel | undefined;
@@ -43,14 +43,22 @@ export class AilinterWebviewPanel {
       (message) => {
         switch (message.type) {
           case 'getStrategy':
-            vscode.commands.executeCommand('ailinter.getStrategy', {
-              smell: message.smell,
-              file: '',
-              line: 1,
-            });
+            // Route to showRefactoring with real CLI data
+            this.showRefactoring(
+              message.smell,
+              message.filePath || '',
+              message.line || 1,
+              context
+            );
             break;
           case 'openUrl':
             vscode.env.openExternal(vscode.Uri.parse(message.url));
+            break;
+          case 'close':
+            if (this.panel) {
+              this.panel.dispose();
+              this.panel = undefined;
+            }
             break;
         }
       },
@@ -63,28 +71,38 @@ export class AilinterWebviewPanel {
 
   /**
    * Show refactoring suggestions in the beside-column panel.
-   * Includes staleness detection — warns if the function body changes.
+   * Fetches real refactoring strategy data from the ailinter CLI
+   * (get-refactoring-strategy command) and displays it with
+   * actual before/after code examples.
    *
-   * @param smellType The code smell type
+   * Shows a loading spinner while the CLI is running, then renders
+   * the full markdown output as styled HTML.
+   *
+   * @param smellType The code smell type (e.g., "deep_nesting")
    * @param filePath Path to the file being refactored
    * @param line Line number of the issue
    * @param context Extension context
    */
-  showRefactoring(
+  async showRefactoring(
     smellType: string,
     filePath: string,
     line: number,
     context: vscode.ExtensionContext
-  ): void {
+  ): Promise<void> {
     this.ensurePanel('AILINTER Refactoring: ' + formatSmellName(smellType));
 
-    this.panel!.webview.html = buildRefactoringHtml(
-      smellType,
-      filePath,
-      line,
-      this.panel!.webview,
-      context.extensionUri
-    );
+    // Get binary path from VS Code settings (default: "ailinter")
+    const binaryPath = vscode.workspace.getConfiguration('ailinter').get<string>('path', 'ailinter');
+
+    // Show loading state immediately
+    this.panel!.webview.html = this.buildLoadingHtml(smellType);
+    this.panel!.reveal(vscode.ViewColumn.Beside, true);
+
+    // Fetch real strategy from CLI
+    const strategyOutput = await getRefactoringStrategy(smellType, binaryPath);
+
+    // Render real content
+    this.panel!.webview.html = buildRefactoringHtml(smellType, strategyOutput, filePath, line);
 
     // ── Start staleness detection (Feature 4) ───────────────────────────
     this.startStalenessDetection(filePath, line);
@@ -110,6 +128,30 @@ export class AilinterWebviewPanel {
     );
 
     this.panel!.reveal(vscode.ViewColumn.Beside, true);
+  }
+
+  /**
+   * Build a loading spinner HTML page while waiting for the CLI.
+   */
+  private buildLoadingHtml(smellType: string): string {
+    const smellName = formatSmellName(smellType);
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { padding: 24px; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 200px; }
+    .spinner { width: 32px; height: 32px; border: 3px solid var(--vscode-panel-border); border-top: 3px solid var(--vscode-textLink-foreground); border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p { margin-top: 16px; font-size: 14px; color: var(--vscode-descriptionForeground); }
+  </style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <p>Fetching refactoring strategy for <strong>${smellName}</strong>…</p>
+</body>
+</html>`;
   }
 
   /**

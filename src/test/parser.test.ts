@@ -154,6 +154,31 @@ describe('parseOutput', () => {
       expect(result.findings[0].smellType).toBe('complex_conditional');
     });
 
+    it('should detect smells from underscore-separated CLI format (complex_method: details)', () => {
+      // CLI format: "complex_method: scanDir CC=18"
+      const line = makeFinding('src/main.go', 10, 5, 'warning', 'complex_method: scanDir CC=18', 'quality');
+      const result = parseOutput(`${makeScoreLine(80)}\n${line}`);
+      expect(result.findings[0].smellType).toBe('complex_method');
+    });
+
+    it('should detect smells from underscore-separated CLI format (deep_nesting: details)', () => {
+      const line = makeFinding('src/main.go', 10, 5, 'warning', 'deep_nesting: level 5 detected', 'quality');
+      const result = parseOutput(`${makeScoreLine(80)}\n${line}`);
+      expect(result.findings[0].smellType).toBe('deep_nesting');
+    });
+
+    it('should detect smells from underscore-separated CLI format (bumpy_road: details)', () => {
+      const line = makeFinding('src/main.go', 10, 5, 'warning', 'bumpy_road: 3 bumps at line 42', 'quality');
+      const result = parseOutput(`${makeScoreLine(80)}\n${line}`);
+      expect(result.findings[0].smellType).toBe('bumpy_road');
+    });
+
+    it('should detect smells from underscore-separated CLI format (brain_method: details)', () => {
+      const line = makeFinding('src/main.go', 10, 5, 'warning', 'brain_method: handleRequest CC=45', 'quality');
+      const result = parseOutput(`${makeScoreLine(80)}\n${line}`);
+      expect(result.findings[0].smellType).toBe('brain_method');
+    });
+
     it('should not set smellType for non-quality findings', () => {
       const line = makeFinding('src/main.go', 10, 5, 'critical', 'Hardcoded API key detected', 'secret');
       const result = parseOutput(`${makeScoreLine(80)}\n${line}`);

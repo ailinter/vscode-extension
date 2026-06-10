@@ -3,7 +3,7 @@
  * VS Code Explorer (file tree).
  *
  * Inspired by CodeScene's FileWithIssuesDecorationProvider, which renders a
- * numeric badge (e.g., "5") next to files that have code health issues.
+ * numeric badge (e.g., "5") next to files that have code quality issues.
  */
 import * as vscode from 'vscode';
 

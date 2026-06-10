@@ -27,7 +27,7 @@ export interface FileScore {
   findings: AilinterFinding[];
 }
 
-export interface ProjectHealth {
+export interface ProjectQuality {
   overallScore: number;
   fileCount: number;
   filesWithIssues: number;

@@ -2,7 +2,7 @@
   "name": "ailinter",
   "displayName": "AILINTER — AI Code Safety Visor",
   "description": "Code quality scoring, secret detection, and vulnerability scanning with inline decorations, CodeLens, hover guidance, Quick Fixes, and project health sidebar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "ailinter",
   "license": "MIT",
   "icon": "icon.png",
@@ -161,7 +161,7 @@
       "ailinter": [
         {
           "id": "ailinter.deltaDashboard",
-          "name": "Code Health Delta",
+          "name": "Code Quality Delta",
           "type": "webview"
         }
       ]
