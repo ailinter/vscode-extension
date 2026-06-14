@@ -81,6 +81,7 @@ The extension automatically downloads and installs the AILINTER CLI when first a
 If you prefer to manage the CLI yourself:
 ```bash
 # macOS (Homebrew)
+brew tap ailinter/ailinter && brew trust ailinter/ailinter
 brew install ailinter/ailinter/ailinter
 
 # Linux / Windows — download from GitHub Releases
