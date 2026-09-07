@@ -1,0 +1,45 @@
+name: AILINTER PR Check
+
+on:
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ailinter-check:
+    name: Code Quality & Secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run AILINTER Check
+        id: ailinter
+        uses: ailinter/ailinter/.github/actions/ailinter-check@main
+        with:
+          quality-threshold: '85'
+          fail-on-secrets: 'true'
+          version: 'latest'
+      - name: Post PR Comment
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        env:
+          QUALITY_SCORE: ${{ steps.ailinter.outputs.quality-score }}
+          SECRETS_FOUND: ${{ steps.ailinter.outputs.secrets-found }}
+          ISSUES_FOUND: ${{ steps.ailinter.outputs.issues-found }}
+        with:
+          script: |
+            const score = process.env.QUALITY_SCORE ?? 'n/a';
+            const secrets = process.env.SECRETS_FOUND ?? 'n/a';
+            const issues = process.env.ISSUES_FOUND ?? 'n/a';
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🤖 **AILINTER gate**: quality ${score}/100 · secrets ${secrets} · issues ${issues}`
+            });
