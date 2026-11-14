@@ -179,6 +179,18 @@ describe('parseOutput', () => {
       expect(result.findings[0].smellType).toBe('brain_method');
     });
 
+    it('should detect function_count from the CLI prefix', () => {
+      const line = makeFinding('src/main.go', 10, 5, 'warning', 'function_count: 26 functions', 'quality');
+      const result = parseOutput(`${makeScoreLine(80)}\n${line}`);
+      expect(result.findings[0].smellType).toBe('function_count');
+    });
+
+    it('should detect long_switch from the CLI prefix', () => {
+      const line = makeFinding('src/main.go', 10, 5, 'warning', 'long_switch: 12 branches', 'quality');
+      const result = parseOutput(`${makeScoreLine(80)}\n${line}`);
+      expect(result.findings[0].smellType).toBe('long_switch');
+    });
+
     it('should not set smellType for non-quality findings', () => {
       const line = makeFinding('src/main.go', 10, 5, 'critical', 'Hardcoded API key detected', 'secret');
       const result = parseOutput(`${makeScoreLine(80)}\n${line}`);

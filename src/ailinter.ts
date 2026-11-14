@@ -51,6 +51,14 @@ const SMELL_MESSAGE_PATTERNS: { pattern: RegExp; smell: string }[] = [
   { pattern: /magic[_\s]*number/i, smell: 'magic_number' },
   { pattern: /misplaced[_\s]*function/i, smell: 'misplaced_function' },
   { pattern: /low[_\s]*cohesion/i, smell: 'low_cohesion' },
+  { pattern: /file[_\s]*bloat/i, smell: 'file_bloat' },
+  { pattern: /function[_\s]*count/i, smell: 'function_count' },
+  { pattern: /lazy[_\s]*element/i, smell: 'lazy_element' },
+  { pattern: /long[_\s]*scope/i, smell: 'long_scope_variable' },
+  { pattern: /long[_\s]*switch/i, smell: 'long_switch' },
+  { pattern: /paragraph[_\s]*of[_\s]*code/i, smell: 'paragraph_of_code' },
+  { pattern: /excessive[_\s]*comments/i, smell: 'excessive_comments' },
+  { pattern: /message[_\s]*chain/i, smell: 'message_chains' },
 ];
 
 function detectSmellType(message: string): string | undefined {

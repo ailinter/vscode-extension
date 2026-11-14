@@ -1,6 +1,6 @@
 # AILINTER — AI Code Safety Visor for VS Code
 
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-v0.3.0-007ACC?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=ailinter.ailinter)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-v0.4.0-007ACC?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=ailinter.ailinter)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Open VSX](https://img.shields.io/badge/Open%20VSX-Registry-9146FF)](https://open-vsx.org/)
 [![AILINTER](https://img.shields.io/badge/AILINTER-30MB%20binary-6e41e2)](https://ailinter.dev)
@@ -142,7 +142,7 @@ All commands are available via the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+
 
 - **VS Code** 1.86.0 or later
 - **AILINTER CLI** — auto-downloaded on first activation (or install manually via brew / GitHub Releases)
-- Supported languages: Go, Python, JavaScript, TypeScript, Java, C#, PHP (more coming)
+- Supported languages: Go, Python, JavaScript/TypeScript, Java, C#, Kotlin, Swift, Rust, Ruby, C/C++, PHP, Scala, shell and Terraform. Data/config formats are scanned for secrets and vulnerabilities only.
 
 ---
 
@@ -194,6 +194,12 @@ Found a bug? Have a feature request? We'd love to hear from you:
 MIT © [AILINTER](https://ailinter.dev)
 
 ---
+
+## What's New in v0.4.0
+
+- **25 code smells** — added `function_count`, `long_switch`, `excessive_comments`, `paragraph_of_code`, `lazy_element`, `long_scope_variable`, `file_bloat` and `message_chains` to Quick Fix, hover and the refactoring panel.
+- **AILINTER CLI v1.1-aware** — works with the language-aware analysis for JavaScript/TypeScript, Python and Ruby.
+- **Language coverage** — Go, Python, JS/TS, Java, C#, Kotlin, Swift, Rust, Ruby, C/C++, PHP, Scala, shell and Terraform; data/config files are skipped for structural smells.
 
 ## What's New in v0.3.0
 
